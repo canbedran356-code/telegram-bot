@@ -32,7 +32,7 @@ TOKEN = os.getenv(“TOKEN”)   # Telegram bot token
 # Flood / spam limitleri
 
 FLOOD_MAX_MESSAGES = 5        # Bu kadar mesaj
-FLOOD_TIME_WINDOW  = 10       # … bu kadar saniye içinde → uyarı
+FLOOD_TIME_WINDOW  = 10       # … bu kadar saniye içinde -> uyarı
 MUTE_DURATION_SEC  = 60       # Susturma süresi (saniye)
 MAX_WARNINGS       = 3        # Kaç uyarıda ban?
 
@@ -120,7 +120,7 @@ else:
     await update.effective_chat.send_message(
         f"⚠️ <b>{name}</b> uyarıldı ({count}/{MAX_WARNINGS})\n"
         f"Sebep: {reason}\n"
-        f"Daha {remaining} uyarı → ban.",
+        f"Daha {remaining} uyarı -> ban.",
         parse_mode=ParseMode.HTML,
     )
 ```
@@ -157,7 +157,7 @@ logger.warning(“Mute hatası: %s”, e)
 # ─────────────────────────────────────────
 
 def check_flood(chat_id: int, user_id: int) -> bool:
-“”“True → flood tespit edildi.”””
+“”“True -> flood tespit edildi.”””
 now = time.time()
 timestamps = flood_tracker[chat_id][user_id]
 
@@ -197,17 +197,17 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 text = (
 “📋 <b>Komut Listesi</b>\n\n”
 “<b>👤 Kullanıcı Komutları</b>\n”
-“/start — Karşılama mesajı\n”
-“/help  — Bu yardım menüsü\n\n”
+“/start - Karşılama mesajı\n”
+“/help  - Bu yardım menüsü\n\n”
 “<b>🔧 Admin Komutları</b>\n”
-“/ban @kullanici — Kullanıcıyı banla\n”
-“/unban @kullanici — Banı kaldır\n”
-“/mute @kullanici — 5 dk sustur\n”
-“/unmute @kullanici — Susturmayı kaldır\n”
-“/warn @kullanici — Manuel uyarı ver\n”
-“/warnings @kullanici — Uyarı sayısını gör\n”
-“/del — Yanıtlanan mesajı sil\n”
-“/rules — Grup kurallarını göster\n”
+“/ban @kullanici - Kullanıcıyı banla\n”
+“/unban @kullanici - Banı kaldır\n”
+“/mute @kullanici - 5 dk sustur\n”
+“/unmute @kullanici - Susturmayı kaldır\n”
+“/warn @kullanici - Manuel uyarı ver\n”
+“/warnings @kullanici - Uyarı sayısını gör\n”
+“/del - Yanıtlanan mesajı sil\n”
+“/rules - Grup kurallarını göster\n”
 )
 await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
@@ -326,7 +326,7 @@ target = update.effective_user
 ```
 count = user_warnings[chat_id][target.id]
 await update.message.reply_text(
-    f"⚠️ <b>{target.first_name}</b> — {count}/{MAX_WARNINGS} uyarı",
+    f"⚠️ <b>{target.first_name}</b> - {count}/{MAX_WARNINGS} uyarı",
     parse_mode=ParseMode.HTML,
 )
 ```
@@ -357,7 +357,7 @@ await update.message.reply_text(
 “3️⃣ Reklam ve tanıtım yasak.\n”
 “4️⃣ Konu dışı içerik paylaşma.\n”
 “5️⃣ Kişisel bilgileri paylaşma.\n\n”
-“⚡ İhlaller: Uyarı → Susturma → Ban”,
+“⚡ İhlaller: Uyarı -> Susturma -> Ban”,
 parse_mode=ParseMode.HTML,
 )
 
