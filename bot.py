@@ -1,5 +1,6 @@
 import os
 import time
+import random
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -9,14 +10,8 @@ from telegram.ext import (
     ContextTypes, filters
 )
 
-# OpenAI (v1+ SDK)
-from openai import OpenAI
-
 TOKEN = os.getenv("TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ADMIN_ID = 8739789412
-
-client = OpenAI(api_key=OPENAI_API_KEY)
 
 users = set()
 warnings = defaultdict(int)
@@ -25,22 +20,33 @@ message_log = defaultdict(list)
 settings = {
     "link": True,
     "spam": True,
-    "ai_chat": True,
-    "ai_mod": True
+    "ai": True
 }
 
-# ---------------- START ----------------
+# Basit AI cevap sistemi
+ai_replies = [
+    "Anladım 👍",
+    "Bu konuda yardımcı olabilirim",
+    "Detay verir misin?",
+    "İlginç bir konu 🤔",
+    "Bunu biraz açar mısın?",
+]
+
+# Basit AI filtre kelimeleri
+bad_patterns = ["aptal", "salak", "orospu", "amk"]
+
+# START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.add(update.effective_chat.id)
-    await update.message.reply_text("🤖 AI BOT AKTİF (Gerçek AI bağlı)")
+    await update.message.reply_text("🤖 AI BOT AKTİF")
 
-# ---------------- STATS ----------------
+# STATS
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"👥 Kullanıcı: {len(users)}\n⚠️ Toplam uyarı: {sum(warnings.values())}"
+        f"👥 Kullanıcı: {len(users)}\n⚠️ Uyarı: {sum(warnings.values())}"
     )
 
-# ---------------- AYAR ----------------
+# AYAR
 async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -48,6 +54,7 @@ async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) >= 2:
         key = context.args[0]
         val = context.args[1]
+
         if key in settings:
             settings[key] = (val == "on")
             await update.message.reply_text(f"{key} → {settings[key]}")
@@ -57,25 +64,19 @@ async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Ayarlar:\n{settings}\nKullanım: /ayar link off"
     )
 
-# ---------------- AI MODERATION ----------------
-async def ai_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["ai_mod"]:
+# AI MODERASYON
+async def ai_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not settings["ai"]:
         return
+
     if not update.message.text:
         return
 
-    text = update.message.text
+    text = update.message.text.lower()
     user_id = update.effective_user.id
 
-    try:
-        # Moderation (OpenAI)
-        mod = client.moderations.create(
-            model="omni-moderation-latest",
-            input=text
-        )
-        flagged = mod.results[0].flagged
-
-        if flagged:
+    for bad in bad_patterns:
+        if bad in text:
             warnings[user_id] += 1
 
             try:
@@ -88,35 +89,22 @@ async def ai_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("👢 AI: 3 uyarı → ban")
             else:
                 await update.message.reply_text(f"⚠️ AI Uyarı {warnings[user_id]}/3")
-    except:
-        pass
+            return
 
-# ---------------- AI CHAT ----------------
+# AI CHAT
 async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["ai_chat"]:
+    if not settings["ai"]:
         return
+
     if not update.message.text:
         return
 
-    text = update.message.text
+    # sadece mention veya reply ise cevap ver
+    if "@"+context.bot.username.lower() in update.message.text.lower() or update.message.reply_to_message:
+        reply = random.choice(ai_replies)
+        await update.message.reply_text(reply)
 
-    # sadece mention / reply ise cevap ver
-    if update.message.reply_to_message or f"@{context.bot.username.lower()}" in text.lower():
-        try:
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "Sen bir Telegram grup moderasyon botusun. Kısa ve net cevap ver."},
-                    {"role": "user", "content": text}
-                ],
-                max_tokens=200
-            )
-            reply = resp.choices[0].message.content
-            await update.message.reply_text(reply)
-        except:
-            await update.message.reply_text("⚠️ AI cevap veremedi")
-
-# ---------------- LINK FILTER ----------------
+# LINK
 async def link_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not settings["link"]:
         return
@@ -127,7 +115,7 @@ async def link_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# ---------------- SPAM ----------------
+# SPAM
 async def spam_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not settings["spam"]:
         return
@@ -146,7 +134,7 @@ async def spam_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text("🚫 Spam → mute")
 
-# ---------------- BAN ----------------
+# BAN
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -156,7 +144,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.reply_to_message.from_user.id
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
 
-# ---------------- UNBAN ----------------
+# UNBAN
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -166,7 +154,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.reply_to_message.from_user.id
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
 
-# ---------------- MUTE ----------------
+# MUTE
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -179,9 +167,9 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args:
         arg = context.args[0]
         if "m" in arg:
-            duration = int(arg.replace("m","")) * 60
+            duration = int(arg.replace("m",""))*60
         elif "h" in arg:
-            duration = int(arg.replace("h","")) * 3600
+            duration = int(arg.replace("h",""))*3600
 
     until = datetime.utcnow() + timedelta(seconds=duration)
 
@@ -192,7 +180,7 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         until_date=until
     )
 
-# ---------------- UNMUTE ----------------
+# UNMUTE
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -212,7 +200,7 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
     )
 
-# ---------------- DUYURU ----------------
+# DUYURU
 async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -224,13 +212,11 @@ async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    await update.message.reply_text("📢 Gönderildi")
-
-# ---------------- SAVE ----------------
+# SAVE
 async def save_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.add(update.effective_chat.id)
 
-# ---------------- APP ----------------
+# APP
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
@@ -242,8 +228,7 @@ app.add_handler(CommandHandler("unmute", unmute))
 app.add_handler(CommandHandler("duyuru", duyuru))
 app.add_handler(CommandHandler("ayar", ayar))
 
-# sıra önemli
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_moderation))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_filter))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_filter))
 app.add_handler(MessageHandler(filters.ALL, spam_filter))
 app.add_handler(MessageHandler(filters.TEXT, ai_chat))
