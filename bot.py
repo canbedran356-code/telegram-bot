@@ -8,7 +8,7 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 
 # KENDİ ID'İNİ BURAYA KOY
-ADMIN_ID = 123456789
+ADMIN_ID = 8739789412
 
 # Küfür listesi
 bad_words = ["küfür1", "küfür2"]
