@@ -1,11 +1,22 @@
+“””
+🛡️ Gelişmiş Telegram Güvenlik Botu
+
+- Grup yönetimi & moderasyon
+- Spam/flood koruması
+
+Gereksinimler:
+pip install python-telegram-bot
+
+Ortam değişkenleri (.env veya sistem):
+TOKEN   → Telegram Bot Token (BotFather’dan)
+“””
+
 import os
 import time
 import logging
-import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-import anthropic
 from telegram import (
 Update,
 ChatPermissions,
@@ -29,8 +40,7 @@ from telegram.constants import ParseMode
 
 # ─────────────────────────────────────────
 
-TOKEN  = os.getenv(“TOKEN”)   # Telegram bot token
-AI_KEY = os.getenv(“AI_KEY”)  # Anthropic API key
+TOKEN = os.getenv(“TOKEN”)   # Telegram bot token
 
 # Flood / spam limitleri
 
@@ -45,14 +55,6 @@ BANNED_WORDS = [
 “spam”, “reklam”, “kazan”, “kripto”, “forex”,
 “casino”, “bahis”, “hack”, “şifre”, “kırmak”,
 ]
-
-# Claude sistem promptu
-
-CLAUDE_SYSTEM = (
-“Sen yardımcı, nazik ve bilgili bir Telegram grup asistanısın. “
-“Türkçe cevap ver. Kısa ve öz ol. “
-“Zararlı, yanıltıcı veya uygunsuz içerik üretme.”
-)
 
 # Loglama
 
@@ -75,10 +77,6 @@ flood_tracker: dict[int, dict[int, list[float]]] = defaultdict(lambda: defaultdi
 user_warnings: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
 
 # user_warnings[chat_id][user_id] = uyarı_sayısı
-
-ai_conversations: dict[int, list[dict]] = defaultdict(list)
-
-# ai_conversations[user_id] = [{“role”: …, “content”: …}, …]
 
 # ─────────────────────────────────────────
 
@@ -188,48 +186,13 @@ return len(flood_tracker[chat_id][user_id]) > FLOOD_MAX_MESSAGES
 
 # ─────────────────────────────────────────
 
-# CLAUDE AI
-
-# ─────────────────────────────────────────
-
-def ask_claude(user_id: int, user_message: str) -> str:
-“”“Claude Haiku ile çok turlu sohbet.”””
-client = anthropic.Anthropic(api_key=AI_KEY)
-
-```
-history = ai_conversations[user_id]
-history.append({"role": "user", "content": user_message})
-
-# Bağlam penceresini sınırla (son 10 tur)
-if len(history) > 20:
-    history = history[-20:]
-    ai_conversations[user_id] = history
-
-try:
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=512,
-        system=CLAUDE_SYSTEM,
-        messages=history,
-    )
-    reply = response.content[0].text
-    history.append({"role": "assistant", "content": reply})
-    return reply
-except anthropic.APIError as e:
-    logger.error("Claude API hatası: %s", e)
-    return "⚠️ AI şu an yanıt veremiyor, lütfen daha sonra tekrar dene."
-```
-
-# ─────────────────────────────────────────
-
 # KOMUT İŞLEYİCİLER
 
 # ─────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 keyboard = [
-[InlineKeyboardButton(“📋 Yardım”, callback_data=“help”),
-InlineKeyboardButton(“🤖 AI Sohbet”, callback_data=“ai_info”)],
+[InlineKeyboardButton(“📋 Yardım”, callback_data=“help”)],
 [InlineKeyboardButton(“🛡️ Güvenlik Durumu”, callback_data=“status”)],
 ]
 await update.message.reply_text(
@@ -237,8 +200,7 @@ await update.message.reply_text(
 “Ben bu grubu koruyorum:\n”
 “✅ Spam & flood engelleme\n”
 “✅ Yasaklı kelime tespiti\n”
-“✅ Otomatik uyarı & ban\n”
-“✅ Claude AI sohbet\n\n”
+“✅ Otomatik uyarı & ban\n\n”
 “Aşağıdaki butonları veya komutları kullanabilirsin.”,
 parse_mode=ParseMode.HTML,
 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -249,9 +211,7 @@ text = (
 “📋 <b>Komut Listesi</b>\n\n”
 “<b>👤 Kullanıcı Komutları</b>\n”
 “/start — Karşılama mesajı\n”
-“/help  — Bu yardım menüsü\n”
-“/ai <soru> — Claude AI’ya sor\n”
-“/reset — AI sohbet geçmişini sıfırla\n\n”
+“/help  — Bu yardım menüsü\n\n”
 “<b>🔧 Admin Komutları</b>\n”
 “/ban @kullanici — Kullanıcıyı banla\n”
 “/unban @kullanici — Banı kaldır\n”
@@ -263,26 +223,6 @@ text = (
 “/rules — Grup kurallarını göster\n”
 )
 await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-
-async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-if not context.args:
-await update.message.reply_text(“Kullanım: /ai <sorunuz>”)
-return
-
-```
-query = " ".join(context.args)
-msg = await update.message.reply_text("🤔 Düşünüyorum...")
-
-loop = asyncio.get_event_loop()
-reply = await loop.run_in_executor(
-    None, ask_claude, update.effective_user.id, query
-)
-await msg.edit_text(f"🤖 {reply}")
-```
-
-async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
-ai_conversations[update.effective_user.id].clear()
-await update.message.reply_text(“✅ AI sohbet geçmişin sıfırlandı.”)
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 member = await get_member_status(update, update.effective_user.id)
@@ -486,13 +426,6 @@ if update.effective_chat.type in ("group", "supergroup"):
             pass
         await warn_user(update, context, user.id, "İzinsiz grup/kanal linki")
         return
-
-# 4) Özel sohbette AI ile konuş (grup mesajları /ai komutuyla)
-if update.effective_chat.type == "private":
-    msg = await update.message.reply_text("🤔 Düşünüyorum...")
-    loop = asyncio.get_event_loop()
-    reply = await loop.run_in_executor(None, ask_claude, user.id, text)
-    await msg.edit_text(f"🤖 {reply}")
 ```
 
 # ─────────────────────────────────────────
@@ -509,14 +442,6 @@ await query.answer()
 if query.data == "help":
     await query.message.reply_text(
         "📋 Yardım için /help komutunu kullan."
-    )
-elif query.data == "ai_info":
-    await query.message.reply_text(
-        "🤖 <b>AI Sohbet</b>\n\n"
-        "Grup içinde: <code>/ai sorunuz</code>\n"
-        "Özel mesajda: Direkt yaz, cevap vereyim!\n\n"
-        "Geçmişi sıfırlamak için: /reset",
-        parse_mode=ParseMode.HTML,
     )
 elif query.data == "status":
     await query.message.reply_text(
@@ -538,8 +463,6 @@ elif query.data == "status":
 def main():
 if not TOKEN:
 raise ValueError(“TOKEN ortam değişkeni tanımlanmamış!”)
-if not AI_KEY:
-raise ValueError(“AI_KEY ortam değişkeni tanımlanmamış!”)
 
 ```
 app = ApplicationBuilder().token(TOKEN).build()
@@ -547,8 +470,6 @@ app = ApplicationBuilder().token(TOKEN).build()
 # Komutlar
 app.add_handler(CommandHandler("start",    cmd_start))
 app.add_handler(CommandHandler("help",     cmd_help))
-app.add_handler(CommandHandler("ai",       cmd_ai))
-app.add_handler(CommandHandler("reset",    cmd_reset))
 app.add_handler(CommandHandler("ban",      cmd_ban))
 app.add_handler(CommandHandler("unban",    cmd_unban))
 app.add_handler(CommandHandler("mute",     cmd_mute))
@@ -558,7 +479,7 @@ app.add_handler(CommandHandler("warnings", cmd_warnings))
 app.add_handler(CommandHandler("del",      cmd_del))
 app.add_handler(CommandHandler("rules",    cmd_rules))
 
-# Mesaj moderasyonu + AI
+# Mesaj moderasyonu
 app.add_handler(MessageHandler(
     filters.TEXT & ~filters.COMMAND, handle_message
 ))
