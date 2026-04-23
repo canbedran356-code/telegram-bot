@@ -1,94 +1,55 @@
 import os
 import time
 from collections import defaultdict
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime, timedelta
+
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    ContextTypes, filters
 )
 
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = 8739789412
 
-verified_users = set()
-new_users = set()
+users = set()
+warnings = defaultdict(int)
 message_log = defaultdict(list)
 
 bad_words = ["küfür1", "küfür2"]
 
 # START
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot aktif")
+    users.add(update.effective_chat.id)
+    await update.message.reply_text("🤖 Ultimate Bot Aktif")
 
-# HOŞGELDİN + DOĞRULAMA
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for user in update.message.new_chat_members:
-        new_users.add(user.id)
-
-        keyboard = [[InlineKeyboardButton("✅ Doğrula", callback_data=f"verify_{user.id}")]]
-        await update.message.reply_text(
-            f"👋 Hoş geldin {user.first_name}\nButona basarak doğrulan",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-# BUTON
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    if data.startswith("verify_"):
-        user_id = int(data.split("_")[1])
-
-        if query.from_user.id != user_id:
-            await query.answer("Bu senin değil", show_alert=True)
-            return
-
-        verified_users.add(user_id)
-        if user_id in new_users:
-            new_users.remove(user_id)
-
-        await query.edit_message_text("✅ Doğrulandın!")
-
-# DOĞRULAMA KONTROL (SADECE YENİLER)
-async def check_new_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    # admin geçsin
-    if user_id == ADMIN_ID:
-        return
-
-    # özel mesajda çalışmasın
-    if update.effective_chat.type == "private":
-        return
-
-    # sadece yeni gelenler
-    if user_id in new_users and user_id not in verified_users:
-        try:
-            await update.message.delete()
-        except:
-            pass
-
-# KÜFÜR
+# KÜFÜR + WARNING
 async def bad_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.text:
         return
 
     text = update.message.text.lower()
+    user_id = update.effective_user.id
+
     for word in bad_words:
         if word in text:
+            warnings[user_id] += 1
+
             try:
                 await update.message.delete()
             except:
                 pass
 
-# LINK ENGEL (AKILLI)
-async def link_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.text:
-        return
+            if warnings[user_id] >= 3:
+                await context.bot.ban_chat_member(update.effective_chat.id, user_id)
+                await update.message.reply_text("👢 3 uyarı → banlandı")
+            else:
+                await update.message.reply_text(f"⚠️ Uyarı {warnings[user_id]}/3")
+            return
 
-    if "http" in update.message.text:
+# LINK ENGEL
+async def link_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text and "http" in update.message.text:
         try:
             await update.message.delete()
         except:
@@ -103,15 +64,12 @@ async def spam_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_log[user_id] = [t for t in message_log[user_id] if now - t < 5]
 
     if len(message_log[user_id]) > 6:
-        try:
-            await context.bot.restrict_chat_member(
-                update.effective_chat.id,
-                user_id,
-                permissions={}
-            )
-            await update.message.reply_text("🚫 Spam yaptın")
-        except:
-            pass
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id,
+            user_id,
+            permissions={}
+        )
+        await update.message.reply_text("🚫 Spam → susturuldun")
 
 # BAN
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,16 +77,57 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not update.message.reply_to_message:
-        await update.message.reply_text("❗ Reply yap")
         return
 
     user_id = update.message.reply_to_message.from_user.id
-
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
     await update.message.reply_text("👢 Banlandı")
 
-# MUTE
+# UNBAN
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not update.message.reply_to_message:
+        return
+
+    user_id = update.message.reply_to_message.from_user.id
+    await context.bot.unban_chat_member(update.effective_chat.id, user_id)
+    await update.message.reply_text("✅ Ban kaldırıldı")
+
+# SÜRELİ MUTE
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if not update.message.reply_to_message:
+        return
+
+    args = context.args
+    user_id = update.message.reply_to_message.from_user.id
+
+    duration = 60  # default 1 dk
+
+    if args:
+        arg = args[0]
+        if "m" in arg:
+            duration = int(arg.replace("m", "")) * 60
+        elif "h" in arg:
+            duration = int(arg.replace("h", "")) * 3600
+
+    until = datetime.utcnow() + timedelta(seconds=duration)
+
+    await context.bot.restrict_chat_member(
+        update.effective_chat.id,
+        user_id,
+        permissions={},
+        until_date=until
+    )
+
+    await update.message.reply_text(f"🔇 Susturuldu ({duration} saniye)")
+
+# UNMUTE
+async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
 
@@ -140,16 +139,17 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.restrict_chat_member(
         update.effective_chat.id,
         user_id,
-        permissions={}
+        permissions={
+            "can_send_messages": True,
+            "can_send_media_messages": True,
+            "can_send_other_messages": True,
+            "can_add_web_page_previews": True
+        }
     )
-    await update.message.reply_text("🔇 Susturuldu")
+
+    await update.message.reply_text("🔊 Susturma kaldırıldı")
 
 # DUYURU
-users = set()
-
-async def save_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users.add(update.effective_chat.id)
-
 async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -164,18 +164,20 @@ async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("📢 Gönderildi")
 
+# KAYIT
+async def save_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users.add(update.effective_chat.id)
+
 # APP
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("ban", ban))
+app.add_handler(CommandHandler("unban", unban))
 app.add_handler(CommandHandler("mute", mute))
+app.add_handler(CommandHandler("unmute", unmute))
 app.add_handler(CommandHandler("duyuru", duyuru))
 
-app.add_handler(CallbackQueryHandler(button))
-
-app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
-app.add_handler(MessageHandler(filters.ALL, check_new_user))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bad_filter))
 app.add_handler(MessageHandler(filters.TEXT, link_filter))
 app.add_handler(MessageHandler(filters.ALL, spam_filter))
