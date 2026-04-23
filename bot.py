@@ -1,237 +1,574 @@
 import os
 import time
-import random
+import logging
+import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, filters
+import anthropic
+from telegram import (
+Update,
+ChatPermissions,
+InlineKeyboardButton,
+InlineKeyboardMarkup,
 )
+from telegram.ext import (
+ApplicationBuilder,
+CommandHandler,
+MessageHandler,
+CallbackQueryHandler,
+filters,
+ContextTypes,
+)
+from telegram.error import TelegramError
+from telegram.constants import ParseMode
 
-TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 8739789412
+# ─────────────────────────────────────────
 
-users = set()
-warnings = defaultdict(int)
-message_log = defaultdict(list)
+# YAPILANDIRMA
 
-settings = {
-    "link": True,
-    "spam": True,
-    "ai": True
-}
+# ─────────────────────────────────────────
 
-# Basit AI cevap sistemi
-ai_replies = [
-    "Anladım 👍",
-    "Bu konuda yardımcı olabilirim",
-    "Detay verir misin?",
-    "İlginç bir konu 🤔",
-    "Bunu biraz açar mısın?",
+TOKEN  = os.getenv(“TOKEN”)   # Telegram bot token
+AI_KEY = os.getenv(“AI_KEY”)  # Anthropic API key
+
+# Flood / spam limitleri
+
+FLOOD_MAX_MESSAGES = 5        # Bu kadar mesaj
+FLOOD_TIME_WINDOW  = 10       # … bu kadar saniye içinde → uyarı
+MUTE_DURATION_SEC  = 60       # Susturma süresi (saniye)
+MAX_WARNINGS       = 3        # Kaç uyarıda ban?
+
+# Yasaklı kelimeler (küçük harfe çevrilip kontrol edilir)
+
+BANNED_WORDS = [
+“spam”, “reklam”, “kazan”, “kripto”, “forex”,
+“casino”, “bahis”, “hack”, “şifre”, “kırmak”,
 ]
 
-# Basit AI filtre kelimeleri
-bad_patterns = ["aptal", "salak", "orospu", "amk"]
+# Claude sistem promptu
 
-# START
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users.add(update.effective_chat.id)
-    await update.message.reply_text("🤖 AI BOT AKTİF")
+CLAUDE_SYSTEM = (
+“Sen yardımcı, nazik ve bilgili bir Telegram grup asistanısın. “
+“Türkçe cevap ver. Kısa ve öz ol. “
+“Zararlı, yanıltıcı veya uygunsuz içerik üretme.”
+)
 
-# STATS
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"👥 Kullanıcı: {len(users)}\n⚠️ Uyarı: {sum(warnings.values())}"
+# Loglama
+
+logging.basicConfig(
+format=”%(asctime)s | %(levelname)s | %(message)s”,
+level=logging.INFO,
+)
+logger = logging.getLogger(**name**)
+
+# ─────────────────────────────────────────
+
+# DURUM TABLOLARI (bellekte)
+
+# ─────────────────────────────────────────
+
+flood_tracker: dict[int, dict[int, list[float]]] = defaultdict(lambda: defaultdict(list))
+
+# flood_tracker[chat_id][user_id] = [timestamp, …]
+
+user_warnings: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+
+# user_warnings[chat_id][user_id] = uyarı_sayısı
+
+ai_conversations: dict[int, list[dict]] = defaultdict(list)
+
+# ai_conversations[user_id] = [{“role”: …, “content”: …}, …]
+
+# ─────────────────────────────────────────
+
+# YARDIMCI FONKSİYONLAR
+
+# ─────────────────────────────────────────
+
+def is_admin(member) -> bool:
+“”“Kullanıcının admin/owner olup olmadığını döner.”””
+return member.status in (“administrator”, “creator”)
+
+async def get_member_status(update: Update, user_id: int):
+try:
+return await update.effective_chat.get_member(user_id)
+except TelegramError:
+return None
+
+def contains_banned_word(text: str) -> str | None:
+“”“Metinde yasaklı kelime varsa döner, yoksa None.”””
+lower = text.lower()
+for word in BANNED_WORDS:
+if word in lower:
+return word
+return None
+
+async def warn_user(
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
+user_id: int,
+reason: str,
+) -> None:
+“”“Kullanıcıya uyarı ver; limite ulaşırsa banla.”””
+chat_id = update.effective_chat.id
+user_warnings[chat_id][user_id] += 1
+count = user_warnings[chat_id][user_id]
+
+```
+user = await get_member_status(update, user_id)
+name = user.user.first_name if user else str(user_id)
+
+if count >= MAX_WARNINGS:
+    try:
+        await context.bot.ban_chat_member(chat_id, user_id)
+        await update.effective_chat.send_message(
+            f"🚫 <b>{name}</b> {MAX_WARNINGS} uyarı aldığı için gruptan banlandı.\n"
+            f"Son ihlal: {reason}",
+            parse_mode=ParseMode.HTML,
+        )
+        user_warnings[chat_id][user_id] = 0
+    except TelegramError as e:
+        logger.warning("Ban hatası: %s", e)
+else:
+    remaining = MAX_WARNINGS - count
+    await update.effective_chat.send_message(
+        f"⚠️ <b>{name}</b> uyarıldı ({count}/{MAX_WARNINGS})\n"
+        f"Sebep: {reason}\n"
+        f"Daha {remaining} uyarı → ban.",
+        parse_mode=ParseMode.HTML,
     )
+```
 
-# AYAR
-async def ayar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+async def mute_user(
+update: Update,
+context: ContextTypes.DEFAULT_TYPE,
+user_id: int,
+duration_sec: int,
+reason: str,
+) -> None:
+“”“Kullanıcıyı geçici sustur.”””
+chat_id = update.effective_chat.id
+until = datetime.now() + timedelta(seconds=duration_sec)
+no_perms = ChatPermissions(can_send_messages=False)
+try:
+await context.bot.restrict_chat_member(
+chat_id, user_id, no_perms, until_date=until
+)
+user = await get_member_status(update, user_id)
+name = user.user.first_name if user else str(user_id)
+await update.effective_chat.send_message(
+f”🔇 <b>{name}</b> {duration_sec} saniyeliğine susturuldu.\n”
+f”Sebep: {reason}”,
+parse_mode=ParseMode.HTML,
+)
+except TelegramError as e:
+logger.warning(“Mute hatası: %s”, e)
 
-    if len(context.args) >= 2:
-        key = context.args[0]
-        val = context.args[1]
+# ─────────────────────────────────────────
 
-        if key in settings:
-            settings[key] = (val == "on")
-            await update.message.reply_text(f"{key} → {settings[key]}")
-            return
+# FLOOD KORUMASI
 
-    await update.message.reply_text(
-        f"Ayarlar:\n{settings}\nKullanım: /ayar link off"
+# ─────────────────────────────────────────
+
+def check_flood(chat_id: int, user_id: int) -> bool:
+“”“True → flood tespit edildi.”””
+now = time.time()
+timestamps = flood_tracker[chat_id][user_id]
+
+```
+# Eski kayıtları temizle
+flood_tracker[chat_id][user_id] = [
+    t for t in timestamps if now - t < FLOOD_TIME_WINDOW
+]
+flood_tracker[chat_id][user_id].append(now)
+
+return len(flood_tracker[chat_id][user_id]) > FLOOD_MAX_MESSAGES
+```
+
+# ─────────────────────────────────────────
+
+# CLAUDE AI
+
+# ─────────────────────────────────────────
+
+def ask_claude(user_id: int, user_message: str) -> str:
+“”“Claude Haiku ile çok turlu sohbet.”””
+client = anthropic.Anthropic(api_key=AI_KEY)
+
+```
+history = ai_conversations[user_id]
+history.append({"role": "user", "content": user_message})
+
+# Bağlam penceresini sınırla (son 10 tur)
+if len(history) > 20:
+    history = history[-20:]
+    ai_conversations[user_id] = history
+
+try:
+    response = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        system=CLAUDE_SYSTEM,
+        messages=history,
     )
+    reply = response.content[0].text
+    history.append({"role": "assistant", "content": reply})
+    return reply
+except anthropic.APIError as e:
+    logger.error("Claude API hatası: %s", e)
+    return "⚠️ AI şu an yanıt veremiyor, lütfen daha sonra tekrar dene."
+```
 
-# AI MODERASYON
-async def ai_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["ai"]:
+# ─────────────────────────────────────────
+
+# KOMUT İŞLEYİCİLER
+
+# ─────────────────────────────────────────
+
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+keyboard = [
+[InlineKeyboardButton(“📋 Yardım”, callback_data=“help”),
+InlineKeyboardButton(“🤖 AI Sohbet”, callback_data=“ai_info”)],
+[InlineKeyboardButton(“🛡️ Güvenlik Durumu”, callback_data=“status”)],
+]
+await update.message.reply_text(
+“👋 <b>Güvenlik Botuna Hoş Geldin!</b>\n\n”
+“Ben bu grubu koruyorum:\n”
+“✅ Spam & flood engelleme\n”
+“✅ Yasaklı kelime tespiti\n”
+“✅ Otomatik uyarı & ban\n”
+“✅ Claude AI sohbet\n\n”
+“Aşağıdaki butonları veya komutları kullanabilirsin.”,
+parse_mode=ParseMode.HTML,
+reply_markup=InlineKeyboardMarkup(keyboard),
+)
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+text = (
+“📋 <b>Komut Listesi</b>\n\n”
+“<b>👤 Kullanıcı Komutları</b>\n”
+“/start — Karşılama mesajı\n”
+“/help  — Bu yardım menüsü\n”
+“/ai <soru> — Claude AI’ya sor\n”
+“/reset — AI sohbet geçmişini sıfırla\n\n”
+“<b>🔧 Admin Komutları</b>\n”
+“/ban @kullanici — Kullanıcıyı banla\n”
+“/unban @kullanici — Banı kaldır\n”
+“/mute @kullanici — 5 dk sustur\n”
+“/unmute @kullanici — Susturmayı kaldır\n”
+“/warn @kullanici — Manuel uyarı ver\n”
+“/warnings @kullanici — Uyarı sayısını gör\n”
+“/del — Yanıtlanan mesajı sil\n”
+“/rules — Grup kurallarını göster\n”
+)
+await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def cmd_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if not context.args:
+await update.message.reply_text(“Kullanım: /ai <sorunuz>”)
+return
+
+```
+query = " ".join(context.args)
+msg = await update.message.reply_text("🤔 Düşünüyorum...")
+
+loop = asyncio.get_event_loop()
+reply = await loop.run_in_executor(
+    None, ask_claude, update.effective_user.id, query
+)
+await msg.edit_text(f"🤖 {reply}")
+```
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+ai_conversations[update.effective_user.id].clear()
+await update.message.reply_text(“✅ AI sohbet geçmişin sıfırlandı.”)
+
+async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
+
+```
+if update.message.reply_to_message:
+    target_id = update.message.reply_to_message.from_user.id
+elif context.args:
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Geçerli bir kullanıcı ID'si gir.")
         return
+else:
+    await update.message.reply_text("Bir kullanıcıya yanıt ver veya ID belirt.")
+    return
 
-    if not update.message.text:
-        return
+try:
+    await context.bot.ban_chat_member(update.effective_chat.id, target_id)
+    await update.message.reply_text(f"🚫 Kullanıcı {target_id} banlandı.")
+except TelegramError as e:
+    await update.message.reply_text(f"Hata: {e}")
+```
 
-    text = update.message.text.lower()
-    user_id = update.effective_user.id
+async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
 
-    for bad in bad_patterns:
-        if bad in text:
-            warnings[user_id] += 1
+```
+if not context.args:
+    await update.message.reply_text("Kullanım: /unban <user_id>")
+    return
 
-            try:
-                await update.message.delete()
-            except:
-                pass
+try:
+    target_id = int(context.args[0])
+    await context.bot.unban_chat_member(update.effective_chat.id, target_id)
+    await update.message.reply_text(f"✅ Kullanıcı {target_id}'nin banı kaldırıldı.")
+except (ValueError, TelegramError) as e:
+    await update.message.reply_text(f"Hata: {e}")
+```
 
-            if warnings[user_id] >= 3:
-                await context.bot.ban_chat_member(update.effective_chat.id, user_id)
-                await update.message.reply_text("👢 AI: 3 uyarı → ban")
-            else:
-                await update.message.reply_text(f"⚠️ AI Uyarı {warnings[user_id]}/3")
-            return
+async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
 
-# AI CHAT
-async def ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["ai"]:
-        return
+```
+if update.message.reply_to_message:
+    target = update.message.reply_to_message.from_user
+else:
+    await update.message.reply_text("Susturmak istediğin mesajı yanıtla.")
+    return
 
-    if not update.message.text:
-        return
+await mute_user(update, context, target.id, 300, "Admin kararı")
+```
 
-    # sadece mention veya reply ise cevap ver
-    if "@"+context.bot.username.lower() in update.message.text.lower() or update.message.reply_to_message:
-        reply = random.choice(ai_replies)
-        await update.message.reply_text(reply)
+async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
 
-# LINK
-async def link_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["link"]:
-        return
+```
+if not update.message.reply_to_message:
+    await update.message.reply_text("Susturması kaldırılacak mesajı yanıtla.")
+    return
 
-    if update.message.text and "http" in update.message.text:
+target_id = update.message.reply_to_message.from_user.id
+all_perms = ChatPermissions(
+    can_send_messages=True,
+    can_send_media_messages=True,
+    can_send_polls=True,
+    can_send_other_messages=True,
+    can_add_web_page_previews=True,
+)
+try:
+    await context.bot.restrict_chat_member(
+        update.effective_chat.id, target_id, all_perms
+    )
+    await update.message.reply_text("✅ Susturma kaldırıldı.")
+except TelegramError as e:
+    await update.message.reply_text(f"Hata: {e}")
+```
+
+async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
+
+```
+if not update.message.reply_to_message:
+    await update.message.reply_text("Uyarılacak mesajı yanıtla.")
+    return
+
+target_id = update.message.reply_to_message.from_user.id
+reason = " ".join(context.args) if context.args else "Admin kararı"
+await warn_user(update, context, target_id, reason)
+```
+
+async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+chat_id = update.effective_chat.id
+if update.message.reply_to_message:
+target = update.message.reply_to_message.from_user
+else:
+target = update.effective_user
+
+```
+count = user_warnings[chat_id][target.id]
+await update.message.reply_text(
+    f"⚠️ <b>{target.first_name}</b> — {count}/{MAX_WARNINGS} uyarı",
+    parse_mode=ParseMode.HTML,
+)
+```
+
+async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+member = await get_member_status(update, update.effective_user.id)
+if not member or not is_admin(member):
+await update.message.reply_text(“❌ Bu komut sadece adminlere açık.”)
+return
+
+```
+if not update.message.reply_to_message:
+    await update.message.reply_text("Silinecek mesajı yanıtla.")
+    return
+
+try:
+    await update.message.reply_to_message.delete()
+    await update.message.delete()
+except TelegramError as e:
+    await update.message.reply_text(f"Silinemedi: {e}")
+```
+
+async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+await update.message.reply_text(
+“📜 <b>Grup Kuralları</b>\n\n”
+“1️⃣ Saygılı ol, hakaret etme.\n”
+“2️⃣ Spam ve flood yapma.\n”
+“3️⃣ Reklam ve tanıtım yasak.\n”
+“4️⃣ Konu dışı içerik paylaşma.\n”
+“5️⃣ Kişisel bilgileri paylaşma.\n\n”
+“⚡ İhlaller: Uyarı → Susturma → Ban”,
+parse_mode=ParseMode.HTML,
+)
+
+# ─────────────────────────────────────────
+
+# MESAJ İŞLEYİCİSİ (otomatik moderasyon)
+
+# ─────────────────────────────────────────
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+if not update.message or not update.message.text:
+return
+
+```
+user    = update.effective_user
+chat_id = update.effective_chat.id
+text    = update.message.text
+
+# Adminleri atla
+member = await get_member_status(update, user.id)
+if member and is_admin(member):
+    return
+
+# 1) Flood koruması
+if check_flood(chat_id, user.id):
+    try:
+        await update.message.delete()
+    except TelegramError:
+        pass
+    await mute_user(
+        update, context, user.id, MUTE_DURATION_SEC,
+        f"Flood ({FLOOD_MAX_MESSAGES}+ mesaj / {FLOOD_TIME_WINDOW}s)"
+    )
+    await warn_user(update, context, user.id, "Flood")
+    return
+
+# 2) Yasaklı kelime kontrolü
+bad_word = contains_banned_word(text)
+if bad_word:
+    try:
+        await update.message.delete()
+    except TelegramError:
+        pass
+    await warn_user(update, context, user.id, f'Yasaklı kelime: "{bad_word}"')
+    return
+
+# 3) Link / davet engeli (grup değilse geç)
+if update.effective_chat.type in ("group", "supergroup"):
+    if "t.me/" in text or "telegram.me/" in text:
         try:
             await update.message.delete()
-        except:
+        except TelegramError:
             pass
-
-# SPAM
-async def spam_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not settings["spam"]:
+        await warn_user(update, context, user.id, "İzinsiz grup/kanal linki")
         return
 
-    user_id = update.effective_user.id
-    now = time.time()
+# 4) Özel sohbette AI ile konuş (grup mesajları /ai komutuyla)
+if update.effective_chat.type == "private":
+    msg = await update.message.reply_text("🤔 Düşünüyorum...")
+    loop = asyncio.get_event_loop()
+    reply = await loop.run_in_executor(None, ask_claude, user.id, text)
+    await msg.edit_text(f"🤖 {reply}")
+```
 
-    message_log[user_id].append(now)
-    message_log[user_id] = [t for t in message_log[user_id] if now - t < 5]
+# ─────────────────────────────────────────
 
-    if len(message_log[user_id]) > 6:
-        await context.bot.restrict_chat_member(
-            update.effective_chat.id,
-            user_id,
-            permissions={}
-        )
-        await update.message.reply_text("🚫 Spam → mute")
+# INLINE BUTON İŞLEYİCİSİ
 
-# BAN
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message.reply_to_message:
-        return
+# ─────────────────────────────────────────
 
-    user_id = update.message.reply_to_message.from_user.id
-    await context.bot.ban_chat_member(update.effective_chat.id, user_id)
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+query = update.callback_query
+await query.answer()
 
-# UNBAN
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message.reply_to_message:
-        return
-
-    user_id = update.message.reply_to_message.from_user.id
-    await context.bot.unban_chat_member(update.effective_chat.id, user_id)
-
-# MUTE
-async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message.reply_to_message:
-        return
-
-    user_id = update.message.reply_to_message.from_user.id
-    duration = 60
-
-    if context.args:
-        arg = context.args[0]
-        if "m" in arg:
-            duration = int(arg.replace("m",""))*60
-        elif "h" in arg:
-            duration = int(arg.replace("h",""))*3600
-
-    until = datetime.utcnow() + timedelta(seconds=duration)
-
-    await context.bot.restrict_chat_member(
-        update.effective_chat.id,
-        user_id,
-        permissions={},
-        until_date=until
+```
+if query.data == "help":
+    await query.message.reply_text(
+        "📋 Yardım için /help komutunu kullan."
     )
-
-# UNMUTE
-async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-    if not update.message.reply_to_message:
-        return
-
-    user_id = update.message.reply_to_message.from_user.id
-
-    await context.bot.restrict_chat_member(
-        update.effective_chat.id,
-        user_id,
-        permissions={
-            "can_send_messages": True,
-            "can_send_media_messages": True,
-            "can_send_other_messages": True,
-            "can_add_web_page_previews": True
-        }
+elif query.data == "ai_info":
+    await query.message.reply_text(
+        "🤖 <b>AI Sohbet</b>\n\n"
+        "Grup içinde: <code>/ai sorunuz</code>\n"
+        "Özel mesajda: Direkt yaz, cevap vereyim!\n\n"
+        "Geçmişi sıfırlamak için: /reset",
+        parse_mode=ParseMode.HTML,
     )
+elif query.data == "status":
+    await query.message.reply_text(
+        "🛡️ <b>Güvenlik Durumu: AKTİF</b>\n\n"
+        f"• Flood eşiği: {FLOOD_MAX_MESSAGES} mesaj / {FLOOD_TIME_WINDOW}s\n"
+        f"• Susturma süresi: {MUTE_DURATION_SEC}s\n"
+        f"• Max uyarı (ban): {MAX_WARNINGS}\n"
+        f"• Yasaklı kelime sayısı: {len(BANNED_WORDS)}",
+        parse_mode=ParseMode.HTML,
+    )
+```
 
-# DUYURU
-async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+# ─────────────────────────────────────────
 
-    msg = " ".join(context.args)
-    for user in users:
-        try:
-            await context.bot.send_message(user, msg)
-        except:
-            pass
+# ANA GİRİŞ NOKTASI
 
-# SAVE
-async def save_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users.add(update.effective_chat.id)
+# ─────────────────────────────────────────
 
-# APP
+def main():
+if not TOKEN:
+raise ValueError(“TOKEN ortam değişkeni tanımlanmamış!”)
+if not AI_KEY:
+raise ValueError(“AI_KEY ortam değişkeni tanımlanmamış!”)
+
+```
 app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("stats", stats))
-app.add_handler(CommandHandler("ban", ban))
-app.add_handler(CommandHandler("unban", unban))
-app.add_handler(CommandHandler("mute", mute))
-app.add_handler(CommandHandler("unmute", unmute))
-app.add_handler(CommandHandler("duyuru", duyuru))
-app.add_handler(CommandHandler("ayar", ayar))
+# Komutlar
+app.add_handler(CommandHandler("start",    cmd_start))
+app.add_handler(CommandHandler("help",     cmd_help))
+app.add_handler(CommandHandler("ai",       cmd_ai))
+app.add_handler(CommandHandler("reset",    cmd_reset))
+app.add_handler(CommandHandler("ban",      cmd_ban))
+app.add_handler(CommandHandler("unban",    cmd_unban))
+app.add_handler(CommandHandler("mute",     cmd_mute))
+app.add_handler(CommandHandler("unmute",   cmd_unmute))
+app.add_handler(CommandHandler("warn",     cmd_warn))
+app.add_handler(CommandHandler("warnings", cmd_warnings))
+app.add_handler(CommandHandler("del",      cmd_del))
+app.add_handler(CommandHandler("rules",    cmd_rules))
 
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ai_filter))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, link_filter))
-app.add_handler(MessageHandler(filters.ALL, spam_filter))
-app.add_handler(MessageHandler(filters.TEXT, ai_chat))
-app.add_handler(MessageHandler(filters.ALL, save_user))
+# Mesaj moderasyonu + AI
+app.add_handler(MessageHandler(
+    filters.TEXT & ~filters.COMMAND, handle_message
+))
 
+# Butonlar
+app.add_handler(CallbackQueryHandler(button_callback))
+
+logger.info("Bot başlatılıyor...")
 app.run_polling()
+```
+
+if **name** == “**main**”:
+main()
