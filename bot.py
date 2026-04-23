@@ -24,7 +24,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "📡 Berxwedan Nûçe Bot\nHoş geldin!",
+        " Berxwedan Nûçe Bot\nHoş geldin!",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
