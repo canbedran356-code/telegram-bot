@@ -1,87 +1,64 @@
-import os
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+import asyncio
+import logging
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import ContentType
 
-TOKEN = os.getenv("TOKEN")
+# --- AYARLAR ---
+# BotFather'dan aldığınız token
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE" 
+logging.basicConfig(level=logging.INFO)
 
-ADMIN_ID = 123456789  # kendi ID
+# --- BOT BAŞLATMA ---
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
 
-bad_words = ["küfür1", "küfür2"]
+# --- KOMUTLAR VE MESAJLAR ---
 
-# START
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 GroupHelp tarzı bot aktif!")
+# /start komutu (Bot özelden yazıldığında veya gruba eklendiğinde)
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "👋 Merhaba! Ben Grup Yardım Botuyum.\n\n"
+        "Grup yönetimine yardımcı olmak için buradayım.\n"
+        "Kuralları öğrenmek için /kurallar komutunu kullanabilirsiniz."
+    )
 
-# HOŞGELDİN
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for user in update.message.new_chat_members:
-        await update.message.reply_text(f"👋 Hoş geldin {user.first_name}")
+# /kurallar komutu (Grupta)
+@dp.message(Command("kurallar"))
+async def cmd_kurallar(message: types.Message):
+    rules_text = (
+        "📜 **Grup Kuralları**\n\n"
+        "1. Saygılı olun.\n"
+        "2. Spam yapmayın.\n"
+        "3. Reklam içerik paylaşmayın.\n"
+        "4. Küfür/Hakaret yasaktır."
+    )
+    await message.answer(rules_text, parse_mode="Markdown")
 
-# KÜFÜR FİLTRE
-async def filter_bad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.lower()
+# /help komutu
+@dp.message(Command("help"))
+async def cmd_help(message: types.Message):
+    await message.answer(
+        "🛠 **Yardım Menüsü**\n\n"
+        "/kurallar - Grup kurallarını gösterir.\n"
+        "/ping - Botun çalışıp çalışmadığını kontrol eder."
+    )
 
-    for word in bad_words:
-        if word in text:
-            await update.message.delete()
-            break
-
-# LINK ENGEL
-async def link_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if "http" in update.message.text:
-        await update.message.delete()
-
-# BAN
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-    
-    if update.message.reply_to_message:
-        user_id = update.message.reply_to_message.from_user.id
-        await context.bot.ban_chat_member(update.message.chat_id, user_id)
-
-# MUTE
-async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    if update.message.reply_to_message:
-        user_id = update.message.reply_to_message.from_user.id
-        await context.bot.restrict_chat_member(
-            update.message.chat_id,
-            user_id,
-            permissions={}
+# Yeni Üye Karşılama
+@dp.message(F.content_type == ContentType.NEW_CHAT_MEMBERS)
+async def welcome_member(message: types.Message):
+    for member in message.new_chat_members:
+        await message.answer(
+            f"Hoş geldin {member.mention_markdown()}! 🎉\n"
+            f"Lütfen önce kuralları oku: /kurallar",
+            parse_mode="Markdown"
         )
 
-# DUYURU
-users = set()
+# --- ANA DÖNGÜ ---
+async def main():
+    # Botu başlat (uzun yoklama - polling)
+    await dp.start_polling(bot)
 
-async def save_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users.add(update.message.chat_id)
-
-async def duyuru(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != ADMIN_ID:
-        return
-
-    msg = " ".join(context.args)
-
-    for user in users:
-        try:
-            await context.bot.send_message(user, msg)
-        except:
-            pass
-
-# APP
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("ban", ban))
-app.add_handler(CommandHandler("mute", mute))
-app.add_handler(CommandHandler("duyuru", duyuru))
-
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, filter_bad))
-app.add_handler(MessageHandler(filters.TEXT, link_block))
-app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
-app.add_handler(MessageHandler(filters.ALL, save_user))
-
-app.run_polling()
+if __name__ == "__main__":
+    asyncio.run(main())
