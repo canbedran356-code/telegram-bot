@@ -1,16 +1,3 @@
-“””
-🛡️ Gelişmiş Telegram Güvenlik Botu
-
-- Grup yönetimi & moderasyon
-- Spam/flood koruması
-
-Gereksinimler:
-pip install python-telegram-bot
-
-Ortam değişkenleri (.env veya sistem):
-TOKEN   → Telegram Bot Token (BotFather’dan)
-“””
-
 import os
 import time
 import logging
