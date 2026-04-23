@@ -1,4 +1,4 @@
-import os
+mı import os
 import time
 import logging
 from collections import defaultdict
@@ -47,6 +47,26 @@ def contains_banned_word(text):
     return None
 
 
+async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+
+    members = await context.bot.get_chat_administrators(chat.id)
+
+    text = "📢 Herkes buraya!\n\n"
+
+    count = 0
+    async for member in context.bot.get_chat_members(chat.id):
+        user = member.user
+        if not user.is_bot:
+            text += f"[{user.first_name}](tg://user?id={user.id}) "
+            count += 1
+
+            if count % 5 == 0:
+                await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+                text = ""
+
+    if text:
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 async def warn_user(update, context, user_id, reason):
     chat_id = update.effective_chat.id
     user_warnings[chat_id][user_id] += 1
@@ -217,6 +237,8 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
+    app.add_handler(CommandHandler("all", cmd_all))
+    app.add_handler(CommandHandler("admins", cmd_admins))
     print("Bot çalışıyor...")
     app.run_polling()
 
