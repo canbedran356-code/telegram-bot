@@ -68,7 +68,8 @@ async def log_action(context, update, action, reason=""):
         pass
 
 
-# USER BUL
+# ================= USER BUL =================
+
 async def resolve_user(update, context):
     if update.message.reply_to_message:
         u = update.message.reply_to_message.from_user
@@ -98,6 +99,7 @@ async def resolve_user(update, context):
 
 async def mute_user(update, context, user_id, reason):
     if await is_admin(update, user_id):
+        await update.message.reply_text("⚠️ Admin sessize alınamaz.")
         return
 
     until = datetime.now() + timedelta(seconds=MUTE_TIME)
@@ -115,6 +117,7 @@ async def mute_user(update, context, user_id, reason):
 
 async def warn_user(update, context, user_id, reason):
     if await is_admin(update, user_id):
+        await update.message.reply_text("⚠️ Admin uyarı alamaz.")
         return
 
     chat = update.effective_chat.id
@@ -136,13 +139,23 @@ async def warn_user(update, context, user_id, reason):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Guard + Müzik Bot aktif")
 
+
 # WARN
 async def warn_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     uid, _ = await resolve_user(update, context)
     if uid:
         await warn_user(update, context, uid, "admin")
 
+
 async def unwarn_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     uid, _ = await resolve_user(update, context)
     if uid:
         chat = update.effective_chat.id
@@ -150,13 +163,23 @@ async def unwarn_cmd(update, context):
             warns[chat][uid] -= 1
         await update.message.reply_text("✅ Unwarn")
 
+
 # MUTE
 async def mute_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     uid, _ = await resolve_user(update, context)
     if uid:
         await mute_user(update, context, uid, "admin")
 
+
 async def unmute_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     uid, _ = await resolve_user(update, context)
     if uid:
         await context.bot.restrict_chat_member(
@@ -166,22 +189,33 @@ async def unmute_cmd(update, context):
         )
         await update.message.reply_text("🔊 Unmute")
 
+
 # BAN
 async def ban_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     uid, _ = await resolve_user(update, context)
     if uid:
         if await is_admin(update, uid):
-            await update.message.reply_text("Admin banlanamaz")
+            await update.message.reply_text("⚠️ Admin banlanamaz.")
             return
 
         await context.bot.ban_chat_member(update.effective_chat.id, uid)
         await update.message.reply_text("🚫 Ban")
 
+
 async def unban_cmd(update, context):
+    if not await is_admin(update, update.effective_user.id):
+        await update.message.reply_text("❌ Bu işlem size göre değil.")
+        return
+
     if context.args and context.args[0].isdigit():
         uid = int(context.args[0])
         await context.bot.unban_chat_member(update.effective_chat.id, uid)
         await update.message.reply_text("✅ Unban")
+
 
 # ================= 🎵 MÜZİK =================
 
@@ -216,6 +250,7 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Müzik indirilemedi")
 
+
 # ================= AUTO =================
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,6 +271,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if has_link(text):
         await update.message.delete()
         await warn_user(update, context, user.id, "link")
+
 
 # ================= MAIN =================
 
