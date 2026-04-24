@@ -2,6 +2,7 @@ import os
 import re
 import time
 import logging
+import yt_dlp
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -55,7 +56,7 @@ async def log_action(context, update, action, reason=""):
     chat = update.effective_chat
 
     msg = f"""
-<b>📌 {action}</b>
+<b>{action}</b>
 👤 {user.first_name}
 🆔 <code>{user.id}</code>
 💬 {chat.title}
@@ -67,29 +68,24 @@ async def log_action(context, update, action, reason=""):
         pass
 
 
-# 🔥 USER BULMA (REPLY / ID / USERNAME)
+# USER BUL
 async def resolve_user(update, context):
-    # reply
     if update.message.reply_to_message:
-        user = update.message.reply_to_message.from_user
-        return user.id, user.first_name
+        u = update.message.reply_to_message.from_user
+        return u.id, u.first_name
 
     if context.args:
         arg = context.args[0]
 
-        # ID
         if arg.isdigit():
             try:
-                member = await update.effective_chat.get_member(int(arg))
-                return member.user.id, member.user.first_name
+                m = await update.effective_chat.get_member(int(arg))
+                return m.user.id, m.user.first_name
             except:
                 return None, None
 
-        # username
         if arg.startswith("@"):
             username = arg.replace("@", "").lower()
-
-            # chat members cache yok → sadece adminlerde garanti
             admins = await update.effective_chat.get_administrators()
             for m in admins:
                 if m.user.username and m.user.username.lower() == username:
@@ -138,105 +134,89 @@ async def warn_user(update, context, user_id, reason):
 # ================= COMMANDS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Guard Bot aktif")
+    await update.message.reply_text("🤖 Guard + Müzik Bot aktif")
 
 # WARN
 async def warn_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        await update.message.reply_text("Kullanıcı bulunamadı")
-        return
-    await warn_user(update, context, uid, "admin")
-
+    uid, _ = await resolve_user(update, context)
+    if uid:
+        await warn_user(update, context, uid, "admin")
 
 async def unwarn_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
-
-    chat = update.effective_chat.id
-    if warns[chat][uid] > 0:
-        warns[chat][uid] -= 1
-
-    await update.message.reply_text("✅ Warn silindi")
-    await log_action(context, update, "UNWARN")
-
-
-async def resetwarn_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
-
-    chat = update.effective_chat.id
-    warns[chat][uid] = 0
-
-    await update.message.reply_text("♻️ Warn sıfırlandı")
-    await log_action(context, update, "RESET WARN")
-
-
-async def warnings_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
-
-    chat = update.effective_chat.id
-    count = warns[chat][uid]
-
-    await update.message.reply_text(f"⚠️ Warn: {count}/{MAX_WARN}")
-
+    uid, _ = await resolve_user(update, context)
+    if uid:
+        chat = update.effective_chat.id
+        if warns[chat][uid] > 0:
+            warns[chat][uid] -= 1
+        await update.message.reply_text("✅ Unwarn")
 
 # MUTE
 async def mute_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
-
-    await mute_user(update, context, uid, "admin")
-
+    uid, _ = await resolve_user(update, context)
+    if uid:
+        await mute_user(update, context, uid, "admin")
 
 async def unmute_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
-
-    await context.bot.restrict_chat_member(
-        update.effective_chat.id,
-        uid,
-        ChatPermissions(can_send_messages=True)
-    )
-
-    await update.message.reply_text("🔊 Unmute")
-    await log_action(context, update, "UNMUTE")
-
+    uid, _ = await resolve_user(update, context)
+    if uid:
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id,
+            uid,
+            ChatPermissions(can_send_messages=True)
+        )
+        await update.message.reply_text("🔊 Unmute")
 
 # BAN
 async def ban_cmd(update, context):
-    uid, name = await resolve_user(update, context)
-    if not uid:
-        return
+    uid, _ = await resolve_user(update, context)
+    if uid:
+        if await is_admin(update, uid):
+            await update.message.reply_text("Admin banlanamaz")
+            return
 
-    if await is_admin(update, uid):
-        await update.message.reply_text("Admin banlanamaz")
-        return
-
-    await context.bot.ban_chat_member(update.effective_chat.id, uid)
-    await update.message.reply_text("🚫 Banlandı")
-    await log_action(context, update, "BAN")
-
+        await context.bot.ban_chat_member(update.effective_chat.id, uid)
+        await update.message.reply_text("🚫 Ban")
 
 async def unban_cmd(update, context):
     if context.args and context.args[0].isdigit():
         uid = int(context.args[0])
-    else:
-        await update.message.reply_text("ID gir")
+        await context.bot.unban_chat_member(update.effective_chat.id, uid)
+        await update.message.reply_text("✅ Unban")
+
+# ================= 🎵 MÜZİK =================
+
+async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("🎧 Kullanım: /play şarkı adı")
         return
 
-    await context.bot.unban_chat_member(update.effective_chat.id, uid)
-    await update.message.reply_text("✅ Unban")
-    await log_action(context, update, "UNBAN")
+    query = " ".join(context.args)
+    await update.message.reply_text("🔍 Aranıyor...")
 
+    ydl_opts = {
+        "format": "bestaudio",
+        "noplaylist": True,
+        "quiet": True,
+        "outtmpl": "song.%(ext)s",
+    }
 
-# ================= AUTO SYSTEM =================
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch:{query}", download=True)
+            video = info["entries"][0]
+            file_path = ydl.prepare_filename(video)
+
+        await update.message.reply_audio(
+            audio=open(file_path, "rb"),
+            title=video["title"]
+        )
+
+        os.remove(file_path)
+
+    except:
+        await update.message.reply_text("❌ Müzik indirilemedi")
+
+# ================= AUTO =================
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -249,40 +229,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await is_admin(update, user.id):
         return
 
-    # flood
     if is_flood(chat, user.id):
         await mute_user(update, context, user.id, "flood")
         return
 
-    # link
     if has_link(text):
         await update.message.delete()
         await warn_user(update, context, user.id, "link")
-        return
-
-
-# ================= WELCOME =================
-
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for m in update.message.new_chat_members:
-        await update.message.reply_text(f"👋 Hoş geldin {m.first_name}")
-
 
 # ================= MAIN =================
 
 def main():
-    if not TOKEN:
-        raise ValueError("TOKEN yok")
-
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # commands
     app.add_handler(CommandHandler("start", start))
 
     app.add_handler(CommandHandler("warn", warn_cmd))
     app.add_handler(CommandHandler("unwarn", unwarn_cmd))
-    app.add_handler(CommandHandler("resetwarn", resetwarn_cmd))
-    app.add_handler(CommandHandler("warnings", warnings_cmd))
 
     app.add_handler(CommandHandler("mute", mute_cmd))
     app.add_handler(CommandHandler("unmute", unmute_cmd))
@@ -290,9 +253,9 @@ def main():
     app.add_handler(CommandHandler("ban", ban_cmd))
     app.add_handler(CommandHandler("unban", unban_cmd))
 
-    # auto
+    app.add_handler(CommandHandler("play", play))
+
     app.add_handler(MessageHandler(filters.TEXT, message_handler))
-    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
 
     print("Bot aktif 🚀")
     app.run_polling()
