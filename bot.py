@@ -1,15 +1,17 @@
 import os
 import time
+import re
 import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update, ChatPermissions
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
 from telegram.constants import ParseMode
 
 TOKEN = os.getenv("TOKEN")
+LOG_CHAT_ID = int(os.getenv("LOG_CHAT_ID", "0"))
 
 FLOOD_MAX_MESSAGES = 5
 FLOOD_TIME_WINDOW = 10
@@ -17,11 +19,11 @@ MUTE_DURATION_SEC = 60
 MAX_WARNINGS = 3
 
 BANNED_WORDS = [
-    "spam", "reklam", "kazan", "kripto", "forex",
-    "casino", "bahis", "hack", "sifre", "kirmak",
+    "spam", "reklam", "kripto", "forex",
+    "casino", "bahis", "hack"
 ]
 
-logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 flood_tracker = defaultdict(lambda: defaultdict(list))
@@ -34,23 +36,26 @@ def is_admin(member):
     return member.status in ("administrator", "creator")
 
 
-async def get_member_status(update, user_id):
+async def get_member(update, user_id):
     try:
         return await update.effective_chat.get_member(user_id)
-    except TelegramError:
+    except:
         return None
 
 
 async def is_user_admin(update, user_id):
-    member = await get_member_status(update, user_id)
+    member = await get_member(update, user_id)
     return member and is_admin(member)
 
 
+def contains_link(text):
+    return bool(re.search(r"(https?://|t\.me/|www\.)", text.lower()))
+
+
 def contains_banned_word(text):
-    lower = text.lower()
-    for word in BANNED_WORDS:
-        if word in lower:
-            return word
+    for w in BANNED_WORDS:
+        if w in text.lower():
+            return w
     return None
 
 
@@ -63,7 +68,15 @@ def check_flood(chat_id, user_id):
     return len(flood_tracker[chat_id][user_id]) > FLOOD_MAX_MESSAGES
 
 
-# ================= CORE ACTIONS =================
+async def log(context, text):
+    if LOG_CHAT_ID != 0:
+        try:
+            await context.bot.send_message(LOG_CHAT_ID, text, parse_mode=ParseMode.HTML)
+        except:
+            pass
+
+
+# ================= ACTIONS =================
 
 async def warn_user(update, context, user_id, reason):
     if await is_user_admin(update, user_id):
@@ -73,148 +86,86 @@ async def warn_user(update, context, user_id, reason):
     user_warnings[chat_id][user_id] += 1
     count = user_warnings[chat_id][user_id]
 
-    user = await get_member_status(update, user_id)
-    name = user.user.first_name if user else str(user_id)
+    name = update.effective_user.first_name
+
+    await log(context, f"⚠️ {name} warn aldı ({count}) - {reason}")
 
     if count >= MAX_WARNINGS:
-        try:
-            await context.bot.ban_chat_member(chat_id, user_id)
-            await update.effective_chat.send_message(
-                f"<b>{name}</b> {MAX_WARNINGS} uyarı aldı ve banlandı.\nSebep: {reason}",
-                parse_mode=ParseMode.HTML,
-            )
-            user_warnings[chat_id][user_id] = 0
-        except TelegramError as e:
-            logger.warning(f"Ban hatası: {e}")
+        await context.bot.ban_chat_member(chat_id, user_id)
+        await update.message.reply_text("🚫 Kullanıcı banlandı (warn limiti)")
+        await log(context, f"⛔ {name} banlandı (warn limit)")
+        user_warnings[chat_id][user_id] = 0
     else:
-        remaining = MAX_WARNINGS - count
-        await update.effective_chat.send_message(
-            f"<b>{name}</b> uyarıldı ({count}/{MAX_WARNINGS})\nSebep: {reason}\nKalan: {remaining}",
-            parse_mode=ParseMode.HTML,
-        )
+        await update.message.reply_text(f"⚠️ Warn: {count}/{MAX_WARNINGS}")
 
 
-async def mute_user(update, context, user_id, duration_sec, reason):
-    if await is_user_admin(update, user_id):
-        return
-
-    chat_id = update.effective_chat.id
-    until = datetime.now() + timedelta(seconds=duration_sec)
-
-    try:
-        await context.bot.restrict_chat_member(
-            chat_id,
-            user_id,
-            ChatPermissions(can_send_messages=False),
-            until_date=until
-        )
-
-        user = await get_member_status(update, user_id)
-        name = user.user.first_name if user else str(user_id)
-
-        await update.effective_chat.send_message(
-            f"<b>{name}</b> {duration_sec} saniye susturuldu.\nSebep: {reason}",
-            parse_mode=ParseMode.HTML,
-        )
-
-    except TelegramError as e:
-        logger.warning(f"Mute hatası: {e}")
-
-
-# ================= COMMANDS =================
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("Yardım", callback_data="help")],
-        [InlineKeyboardButton("Durum", callback_data="status")],
-    ]
-    await update.message.reply_text(
-        "🤖 Güvenlik Botu Aktif!",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/ban /unban /mute /unmute /warn /warnings /admins /all /rules"
-    )
-
-
-async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    admins = await context.bot.get_chat_administrators(update.effective_chat.id)
-
-    text = "👮 Adminler:\n\n"
-    for admin in admins:
-        text += f"- {admin.user.first_name}\n"
-
-    await update.message.reply_text(text)
-
-
-async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Bu özellik Telegram API kısıtlı (tüm üyeleri çekemezsin).")
-
-
-async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        return
-
-    user_id = update.message.reply_to_message.from_user.id
-
-    if await is_user_admin(update, user_id):
-        await update.message.reply_text("Admin uyarı alamaz.")
-        return
-
-    await warn_user(update, context, user_id, "Admin uyarısı")
-
-
-async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        return
-
-    user_id = update.message.reply_to_message.from_user.id
+async def unwarn_user(update, context, user_id):
     chat_id = update.effective_chat.id
 
-    count = user_warnings[chat_id][user_id]
-    await update.message.reply_text(f"Uyarı: {count}/{MAX_WARNINGS}")
+    if user_warnings[chat_id][user_id] > 0:
+        user_warnings[chat_id][user_id] -= 1
+
+    await update.message.reply_text("✅ Warn silindi")
 
 
-async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def reset_warnings(update, context, user_id):
+    chat_id = update.effective_chat.id
+    user_warnings[chat_id][user_id] = 0
+    await update.message.reply_text("♻️ Warnlar sıfırlandı")
+
+
+async def mute_user(update, context, user_id, reason):
+    if await is_user_admin(update, user_id):
+        return
+
+    until = datetime.now() + timedelta(seconds=MUTE_DURATION_SEC)
+
+    await context.bot.restrict_chat_member(
+        update.effective_chat.id,
+        user_id,
+        ChatPermissions(can_send_messages=False),
+        until_date=until
+    )
+
+    await update.message.reply_text("🔇 Susturuldu")
+    await log(context, f"🔇 {user_id} mute - {reason}")
+
+
+# ================= COMMANDS (KÜRTÇE) =================
+
+async def ban(update, context):
     if not update.message.reply_to_message:
         return
 
     user_id = update.message.reply_to_message.from_user.id
 
     if await is_user_admin(update, user_id):
-        await update.message.reply_text("Admin banlanamaz.")
+        await update.message.reply_text("Admin ban nabe")
         return
 
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
-    await update.message.reply_text("Banlandı")
+    await update.message.reply_text("🚫 Hat ban kirin")
+    await log(context, f"🚫 {user_id} ban")
 
 
-async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unban(update, context):
     if not context.args:
         return
 
     user_id = int(context.args[0])
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
-    await update.message.reply_text("Unban")
+    await update.message.reply_text("✅ Unban")
 
 
-async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def mute(update, context):
     if not update.message.reply_to_message:
         return
 
     user_id = update.message.reply_to_message.from_user.id
-
-    if await is_user_admin(update, user_id):
-        await update.message.reply_text("Admin susturulamaz.")
-        return
-
-    await mute_user(update, context, user_id, 300, "Admin")
+    await mute_user(update, context, user_id, "admin")
 
 
-async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unmute(update, context):
     if not update.message.reply_to_message:
         return
 
@@ -226,16 +177,36 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ChatPermissions(can_send_messages=True)
     )
 
-    await update.message.reply_text("Unmute")
+    await update.message.reply_text("🔊 Unmute")
 
 
-async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Kurallar: Spam yasak, saygılı ol.")
+async def warn(update, context):
+    if not update.message.reply_to_message:
+        return
+
+    user_id = update.message.reply_to_message.from_user.id
+    await warn_user(update, context, user_id, "admin")
 
 
-# ================= MESSAGE HANDLER =================
+async def unwarn(update, context):
+    if not update.message.reply_to_message:
+        return
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.reply_to_message.from_user.id
+    await unwarn_user(update, context, user_id)
+
+
+async def resetwarn(update, context):
+    if not update.message.reply_to_message:
+        return
+
+    user_id = update.message.reply_to_message.from_user.id
+    await reset_warnings(update, context, user_id)
+
+
+# ================= MESSAGE =================
+
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
 
@@ -243,56 +214,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     text = update.message.text
 
-    member = await get_member_status(update, user.id)
-    if member and is_admin(member):
+    if await is_user_admin(update, user.id):
         return
 
+    # FLOOD
     if check_flood(chat_id, user.id):
-        await mute_user(update, context, user.id, MUTE_DURATION_SEC, "Flood")
+        await mute_user(update, context, user.id, "flood")
         return
 
+    # LINK
+    if contains_link(text):
+        await update.message.delete()
+        await warn_user(update, context, user.id, "link")
+        return
+
+    # BAD WORD
     bad = contains_banned_word(text)
     if bad:
-        await warn_user(update, context, user.id, f"Kelime: {bad}")
+        await warn_user(update, context, user.id, bad)
         return
-
-
-# ================= BUTTON =================
-
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "help":
-        await query.message.reply_text("Komutlar: /help")
-    elif query.data == "status":
-        await query.message.reply_text("Bot aktif ✔️")
 
 
 # ================= MAIN =================
 
 def main():
     if not TOKEN:
-        raise ValueError("TOKEN yok!")
+        raise ValueError("TOKEN yok")
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("admins", cmd_admins))
-    app.add_handler(CommandHandler("all", cmd_all))
-    app.add_handler(CommandHandler("warn", cmd_warn))
-    app.add_handler(CommandHandler("warnings", cmd_warnings))
-    app.add_handler(CommandHandler("ban", cmd_ban))
-    app.add_handler(CommandHandler("unban", cmd_unban))
-    app.add_handler(CommandHandler("mute", cmd_mute))
-    app.add_handler(CommandHandler("unmute", cmd_unmute))
-    app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(CommandHandler("ban", ban))
+    app.add_handler(CommandHandler("unban", unban))
+    app.add_handler(CommandHandler("mute", mute))
+    app.add_handler(CommandHandler("unmute", unmute))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CommandHandler("warn", warn))
+    app.add_handler(CommandHandler("unwarn", unwarn))
+    app.add_handler(CommandHandler("resetwarn", resetwarn))
 
-    print("Bot çalışıyor...")
+    app.add_handler(MessageHandler(filters.TEXT, handle))
+
+    print("Bot aktif...")
     app.run_polling()
 
 
