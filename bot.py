@@ -28,6 +28,8 @@ flood_tracker = defaultdict(lambda: defaultdict(list))
 user_warnings = defaultdict(lambda: defaultdict(int))
 
 
+# ================= HELPERS =================
+
 def is_admin(member):
     return member.status in ("administrator", "creator")
 
@@ -39,6 +41,11 @@ async def get_member_status(update, user_id):
         return None
 
 
+async def is_user_admin(update, user_id):
+    member = await get_member_status(update, user_id)
+    return member and is_admin(member)
+
+
 def contains_banned_word(text):
     lower = text.lower()
     for word in BANNED_WORDS:
@@ -47,27 +54,21 @@ def contains_banned_word(text):
     return None
 
 
-async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
+def check_flood(chat_id, user_id):
+    now = time.time()
+    flood_tracker[chat_id][user_id] = [
+        t for t in flood_tracker[chat_id][user_id] if now - t < FLOOD_TIME_WINDOW
+    ]
+    flood_tracker[chat_id][user_id].append(now)
+    return len(flood_tracker[chat_id][user_id]) > FLOOD_MAX_MESSAGES
 
-    members = await context.bot.get_chat_administrators(chat.id)
 
-    text = "📢 Herkes buraya!\n\n"
+# ================= CORE ACTIONS =================
 
-    count = 0
-    async for member in context.bot.get_chat_members(chat.id):
-        user = member.user
-        if not user.is_bot:
-            text += f"[{user.first_name}](tg://user?id={user.id}) "
-            count += 1
-
-            if count % 5 == 0:
-                await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-                text = ""
-
-    if text:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 async def warn_user(update, context, user_id, reason):
+    if await is_user_admin(update, user_id):
+        return
+
     chat_id = update.effective_chat.id
     user_warnings[chat_id][user_id] += 1
     count = user_warnings[chat_id][user_id]
@@ -94,6 +95,9 @@ async def warn_user(update, context, user_id, reason):
 
 
 async def mute_user(update, context, user_id, duration_sec, reason):
+    if await is_user_admin(update, user_id):
+        return
+
     chat_id = update.effective_chat.id
     until = datetime.now() + timedelta(seconds=duration_sec)
 
@@ -117,16 +121,7 @@ async def mute_user(update, context, user_id, duration_sec, reason):
         logger.warning(f"Mute hatası: {e}")
 
 
-def check_flood(chat_id, user_id):
-    now = time.time()
-    flood_tracker[chat_id][user_id] = [
-        t for t in flood_tracker[chat_id][user_id] if now - t < FLOOD_TIME_WINDOW
-    ]
-    flood_tracker[chat_id][user_id].append(now)
-    return len(flood_tracker[chat_id][user_id]) > FLOOD_MAX_MESSAGES
-
-
-# ================= KOMUTLAR =================
+# ================= COMMANDS =================
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -141,14 +136,58 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/ban /unban /mute /unmute /warn /warnings /del /rules"
+        "/ban /unban /mute /unmute /warn /warnings /admins /all /rules"
     )
+
+
+async def cmd_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    admins = await context.bot.get_chat_administrators(update.effective_chat.id)
+
+    text = "👮 Adminler:\n\n"
+    for admin in admins:
+        text += f"- {admin.user.first_name}\n"
+
+    await update.message.reply_text(text)
+
+
+async def cmd_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bu özellik Telegram API kısıtlı (tüm üyeleri çekemezsin).")
+
+
+async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        return
+
+    user_id = update.message.reply_to_message.from_user.id
+
+    if await is_user_admin(update, user_id):
+        await update.message.reply_text("Admin uyarı alamaz.")
+        return
+
+    await warn_user(update, context, user_id, "Admin uyarısı")
+
+
+async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message:
+        return
+
+    user_id = update.message.reply_to_message.from_user.id
+    chat_id = update.effective_chat.id
+
+    count = user_warnings[chat_id][user_id]
+    await update.message.reply_text(f"Uyarı: {count}/{MAX_WARNINGS}")
 
 
 async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return
+
     user_id = update.message.reply_to_message.from_user.id
+
+    if await is_user_admin(update, user_id):
+        await update.message.reply_text("Admin banlanamaz.")
+        return
+
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
     await update.message.reply_text("Banlandı")
 
@@ -156,6 +195,7 @@ async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         return
+
     user_id = int(context.args[0])
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
     await update.message.reply_text("Unban")
@@ -164,13 +204,20 @@ async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return
+
     user_id = update.message.reply_to_message.from_user.id
+
+    if await is_user_admin(update, user_id):
+        await update.message.reply_text("Admin susturulamaz.")
+        return
+
     await mute_user(update, context, user_id, 300, "Admin")
 
 
 async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         return
+
     user_id = update.message.reply_to_message.from_user.id
 
     await context.bot.restrict_chat_member(
@@ -185,6 +232,8 @@ async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Kurallar: Spam yasak, saygılı ol.")
 
+
+# ================= MESSAGE HANDLER =================
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -208,6 +257,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
 
+# ================= BUTTON =================
+
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -228,6 +279,10 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("admins", cmd_admins))
+    app.add_handler(CommandHandler("all", cmd_all))
+    app.add_handler(CommandHandler("warn", cmd_warn))
+    app.add_handler(CommandHandler("warnings", cmd_warnings))
     app.add_handler(CommandHandler("ban", cmd_ban))
     app.add_handler(CommandHandler("unban", cmd_unban))
     app.add_handler(CommandHandler("mute", cmd_mute))
@@ -237,8 +292,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    app.add_handler(CommandHandler("all", cmd_all))
-    app.add_handler(CommandHandler("admins", cmd_admins))
     print("Bot çalışıyor...")
     app.run_polling()
 
