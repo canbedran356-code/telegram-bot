@@ -3,6 +3,7 @@ import re
 import time
 import logging
 import yt_dlp
+import requests
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -96,7 +97,7 @@ def admin_panel(user_id):
 
 async def mute(update, context, user_id):
     if await is_admin(update, user_id):
-        return
+        return "❌ Admin susturulamaz"
 
     until = datetime.now() + timedelta(seconds=MUTE_TIME)
 
@@ -106,6 +107,7 @@ async def mute(update, context, user_id):
         ChatPermissions(can_send_messages=False),
         until_date=until
     )
+    return "🔇 Mute uygulandı"
 
 
 async def unmute(update, context, user_id):
@@ -114,26 +116,33 @@ async def unmute(update, context, user_id):
         user_id,
         ChatPermissions(can_send_messages=True)
     )
+    return "🔊 Unmute"
 
 
 async def ban(update, context, user_id):
     if await is_admin(update, user_id):
-        return
+        return "❌ Adminleri banlayamazsın"
+
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
+    return "⛔ Banlandı"
 
 
 async def unban(update, context, user_id):
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
+    return "✅ Ban kaldırıldı"
 
 
 async def warn(update, context, user_id):
+    if await is_admin(update, user_id):
+        return "❌ Adminlere warn atamazsın"
+
     chat = update.effective_chat.id
     warns[chat][user_id] += 1
     count = warns[chat][user_id]
 
     if count >= MAX_WARN:
-        await mute(update, context, user_id)
         warns[chat][user_id] = 0
+        await mute(update, context, user_id)
         return "🔇 3 warn → mute"
 
     return f"⚠️ Warn {count}/{MAX_WARN}"
@@ -142,11 +151,13 @@ async def warn(update, context, user_id):
 async def unwarn(update, context, user_id):
     chat = update.effective_chat.id
     warns[chat][user_id] = max(0, warns[chat][user_id] - 1)
+    return "➖ Warn azaltıldı"
 
 
 async def reset_warn(update, context, user_id):
     chat = update.effective_chat.id
     warns[chat][user_id] = 0
+    return "♻️ Warn sıfırlandı"
 
 # ================= CALLBACK =================
 
@@ -159,43 +170,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     member = await query.message.chat.get_member(query.from_user.id)
     if member.status not in ("administrator", "creator"):
-        return await query.answer("Yetkin yok!", show_alert=True)
+        return await query.answer("❌ Bu işlem sana göre değil", show_alert=True)
 
     fake_update = Update(update.update_id, message=query.message)
 
     if action == "panel":
-        return await query.edit_message_text(
-            "👮 Admin Panel",
-            reply_markup=admin_panel(user_id)
-        )
+        return await query.edit_message_text("👮 Admin Panel", reply_markup=admin_panel(user_id))
 
     if action == "warn":
         msg = await warn(fake_update, context, user_id)
-        return await query.edit_message_text(msg)
+    elif action == "unwarn":
+        msg = await unwarn(fake_update, context, user_id)
+    elif action == "reset":
+        msg = await reset_warn(fake_update, context, user_id)
+    elif action == "mute":
+        msg = await mute(fake_update, context, user_id)
+    elif action == "unmute":
+        msg = await unmute(fake_update, context, user_id)
+    elif action == "ban":
+        msg = await ban(fake_update, context, user_id)
+    elif action == "unban":
+        msg = await unban(fake_update, context, user_id)
 
-    if action == "unwarn":
-        await unwarn(fake_update, context, user_id)
-        return await query.edit_message_text("➖ Warn azaltıldı")
-
-    if action == "reset":
-        await reset_warn(fake_update, context, user_id)
-        return await query.edit_message_text("♻️ Warn sıfırlandı")
-
-    if action == "mute":
-        await mute(fake_update, context, user_id)
-        return await query.edit_message_text("🔇 Mute")
-
-    if action == "unmute":
-        await unmute(fake_update, context, user_id)
-        return await query.edit_message_text("🔊 Unmute")
-
-    if action == "ban":
-        await ban(fake_update, context, user_id)
-        return await query.edit_message_text("⛔ Ban")
-
-    if action == "unban":
-        await unban(fake_update, context, user_id)
-        return await query.edit_message_text("✅ Unban")
+    await query.edit_message_text(msg)
 
 # ================= MUSIC =================
 
@@ -213,9 +210,7 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "sleep_interval": 2,
         "max_sleep_interval": 5,
         "extractor_args": {
-            "youtube": {
-                "player_client": ["android"]
-            }
+            "youtube": {"player_client": ["android"]}
         }
     }
 
@@ -225,16 +220,16 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
             video = info["entries"][0]
             file = ydl.prepare_filename(video)
 
-        await update.message.reply_audio(
-            audio=open(file, "rb"),
-            title=video["title"]
-        )
-
+        await update.message.reply_audio(audio=open(file, "rb"), title=video["title"])
         os.remove(file)
-        await msg.delete()
+        return await msg.delete()
 
-    except Exception as e:
-        await msg.edit_text("❌ Müzik indirilemedi")
+    except:
+        # 🔥 FALLBACK
+        try:
+            return await msg.edit_text("❌ YouTube engelledi (429/captcha).")
+        except:
+            return await msg.edit_text("❌ Müzik indirilemedi")
 
 # ================= AUTO =================
 
