@@ -3,30 +3,26 @@ import re
 import time
 import logging
 import yt_dlp
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 
 from telegram import (
-    Update,
-    ChatPermissions,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup
+    Update, ChatPermissions,
+    InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
-    MessageHandler, ContextTypes, filters
+    MessageHandler, ContextTypes,
+    CallbackQueryHandler, filters
 )
-from telegram.constants import ParseMode
 
 # ================= CONFIG =================
 
 TOKEN = os.getenv("TOKEN")
-LOG_CHAT_ID = int(os.getenv("LOG_CHAT_ID", "0"))
-
-WELCOME_PHOTO = "https://hizliresim.com/d0rzkvv"
 
 MAX_WARN = 3
-MUTE_TIME = 120
+MUTE_TIME = 300
 FLOOD_LIMIT = 5
 FLOOD_TIME = 10
 
@@ -42,8 +38,17 @@ async def is_admin(update, user_id):
     return member.status in ("administrator", "creator")
 
 
-def has_link(text):
-    return bool(re.search(r"(https?://|t\.me|www\.)", text.lower()))
+def has_link(message):
+    if message.entities:
+        for e in message.entities:
+            if e.type in ["url", "text_link"]:
+                return True
+
+    if message.text:
+        if re.search(r"(https?://|t\.me|www\.)", message.text.lower()):
+            return True
+
+    return False
 
 
 def is_flood(chat_id, user_id):
@@ -55,73 +60,41 @@ def is_flood(chat_id, user_id):
     return len(flood[chat_id][user_id]) > FLOOD_LIMIT
 
 
-async def log_action(context, update, action, reason=""):
-    if not LOG_CHAT_ID:
-        return
+def action_buttons(user_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚠️ Warn", callback_data=f"warn:{user_id}"),
+            InlineKeyboardButton("🔇 Mute", callback_data=f"mute:{user_id}"),
+            InlineKeyboardButton("⛔ Ban", callback_data=f"ban:{user_id}")
+        ],
+        [
+            InlineKeyboardButton("👮 Admin Panel", callback_data=f"panel:{user_id}")
+        ]
+    ])
 
-    user = update.effective_user
-    chat = update.effective_chat
-
-    msg = f"""
-<b>{action}</b>
-👤 {user.first_name}
-🆔 <code>{user.id}</code>
-💬 {chat.title}
-📝 {reason}
-"""
-    try:
-        await context.bot.send_message(LOG_CHAT_ID, msg, parse_mode=ParseMode.HTML)
-    except:
-        pass
-
-# ================= WELCOME / LEAVE =================
-
-async def welcome_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-
-    # Yeni gelenler
-    if message.new_chat_members:
-        for user in message.new_chat_members:
-            name = user.first_name
-            user_id = user.id
-
-            text = f"""
-🔥 Berxwedan Grubuna Hoşgeldin Heval {name}
-
-📜 Kurallar:
-🚫 Link yasak
-🚫 Flood yasak
-⚠️ 3 warn = mute
-
-Keyifli sohbetler ✌️
-"""
-
-            keyboard = [
-                [InlineKeyboardButton("📜 Kurallar", url="https://t.me/your_rules_link")],
-                [InlineKeyboardButton("👤 Profil", url=f"tg://user?id={user_id}")]
-            ]
-
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await message.reply_photo(
-                photo=WELCOME_PHOTO,
-                caption=text,
-                reply_markup=reply_markup,
-                parse_mode=ParseMode.HTML
-            )
-
-    # Çıkanlar
-    if message.left_chat_member:
-        user = message.left_chat_member
-        name = user.first_name
-
-        await message.reply_text(f"😢 Güle güle git Heval {name}")
+def admin_panel(user_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚠️ Warn", callback_data=f"warn:{user_id}"),
+            InlineKeyboardButton("➖ Unwarn", callback_data=f"unwarn:{user_id}")
+        ],
+        [
+            InlineKeyboardButton("🔇 Mute", callback_data=f"mute:{user_id}"),
+            InlineKeyboardButton("🔊 Unmute", callback_data=f"unmute:{user_id}")
+        ],
+        [
+            InlineKeyboardButton("⛔ Ban", callback_data=f"ban:{user_id}"),
+            InlineKeyboardButton("✅ Unban", callback_data=f"unban:{user_id}")
+        ],
+        [
+            InlineKeyboardButton("♻️ Reset Warn", callback_data=f"reset:{user_id}")
+        ]
+    ])
 
 # ================= CORE =================
 
-async def mute_user(update, context, user_id, reason):
+async def mute(update, context, user_id, reason=""):
     if await is_admin(update, user_id):
-        await update.message.reply_text("⚠️ Admin sessize alınamaz.")
         return
 
     until = datetime.now() + timedelta(seconds=MUTE_TIME)
@@ -133,102 +106,161 @@ async def mute_user(update, context, user_id, reason):
         until_date=until
     )
 
-    await update.message.reply_text("🔇 Susturuldu")
-    await log_action(context, update, "MUTE", reason)
+async def unmute(update, context, user_id):
+    await context.bot.restrict_chat_member(
+        update.effective_chat.id,
+        user_id,
+        ChatPermissions(can_send_messages=True)
+    )
 
-
-async def warn_user(update, context, user_id, reason):
+async def ban(update, context, user_id):
     if await is_admin(update, user_id):
         return
+    await context.bot.ban_chat_member(update.effective_chat.id, user_id)
 
+async def unban(update, context, user_id):
+    await context.bot.unban_chat_member(update.effective_chat.id, user_id)
+
+async def warn(update, context, user_id):
     chat = update.effective_chat.id
     warns[chat][user_id] += 1
     count = warns[chat][user_id]
 
-    await log_action(context, update, "WARN", reason)
-
     if count >= MAX_WARN:
-        await mute_user(update, context, user_id, "3 warn")
+        await mute(update, context, user_id)
         warns[chat][user_id] = 0
-        await update.message.reply_text("🔇 3 warn → mute")
-    else:
-        await update.message.reply_text(f"⚠️ Warn: {count}/{MAX_WARN}")
+        return "🔇 3 warn → mute"
 
-# ================= COMMANDS =================
+    return f"⚠️ Warn {count}/{MAX_WARN}"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot aktif")
+async def unwarn(update, context, user_id):
+    chat = update.effective_chat.id
+    warns[chat][user_id] = max(0, warns[chat][user_id] - 1)
 
-# ================= MÜZİK =================
+async def reset_warn(update, context, user_id):
+    chat = update.effective_chat.id
+    warns[chat][user_id] = 0
+
+# ================= CALLBACK =================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    action, user_id = data.split(":")
+    user_id = int(user_id)
+
+    member = await query.message.chat.get_member(query.from_user.id)
+    if member.status not in ("administrator", "creator"):
+        return await query.answer("Yetkin yok!", show_alert=True)
+
+    fake_update = Update(update.update_id, message=query.message)
+
+    if action == "panel":
+        return await query.edit_message_text(
+            "👮 Admin Panel",
+            reply_markup=admin_panel(user_id)
+        )
+
+    if action == "warn":
+        msg = await warn(fake_update, context, user_id)
+        return await query.edit_message_text(msg)
+
+    if action == "unwarn":
+        await unwarn(fake_update, context, user_id)
+        return await query.edit_message_text("➖ Warn azaltıldı")
+
+    if action == "reset":
+        await reset_warn(fake_update, context, user_id)
+        return await query.edit_message_text("♻️ Warn sıfırlandı")
+
+    if action == "mute":
+        await mute(fake_update, context, user_id)
+        return await query.edit_message_text("🔇 Mute")
+
+    if action == "unmute":
+        await unmute(fake_update, context, user_id)
+        return await query.edit_message_text("🔊 Unmute")
+
+    if action == "ban":
+        await ban(fake_update, context, user_id)
+        return await query.edit_message_text("⛔ Ban")
+
+    if action == "unban":
+        await unban(fake_update, context, user_id)
+        return await query.edit_message_text("✅ Unban")
+
+# ================= MUSIC =================
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("🎧 Kullanım: /play şarkı adı")
-        return
+        return await update.message.reply_text("Kullanım: /play şarkı")
 
     query = " ".join(context.args)
-    await update.message.reply_text("🔍 Aranıyor...")
+    msg = await update.message.reply_text("🎧 İndiriliyor...")
 
     ydl_opts = {
-        "format": "bestaudio",
-        "noplaylist": True,
+        "format": "bestaudio/best",
+        "outtmpl": "%(title)s.%(ext)s",
         "quiet": True,
-        "outtmpl": "song.%(ext)s",
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"ytsearch:{query}", download=True)
             video = info["entries"][0]
-            file_path = ydl.prepare_filename(video)
+            file = ydl.prepare_filename(video)
 
         await update.message.reply_audio(
-            audio=open(file_path, "rb"),
+            audio=open(file, "rb"),
             title=video["title"]
         )
 
-        os.remove(file_path)
+        os.remove(file)
+        await msg.delete()
 
     except:
-        await update.message.reply_text("❌ Müzik indirilemedi")
+        await msg.edit_text("❌ Hata")
 
 # ================= AUTO =================
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not update.message:
         return
 
     user = update.effective_user
     chat = update.effective_chat.id
-    text = update.message.text
 
     if await is_admin(update, user.id):
         return
 
     if is_flood(chat, user.id):
-        await mute_user(update, context, user.id, "flood")
+        await mute(update, context, user.id)
         return
 
-    if has_link(text):
-        await update.message.delete()
-        await warn_user(update, context, user.id, "link")
+    if has_link(update.message):
+        try:
+            await update.message.delete()
+        except:
+            pass
+
+        await update.message.reply_text(
+            f"🚫 {user.first_name} kural ihlali!",
+            reply_markup=action_buttons(user.id)
+        )
 
 # ================= MAIN =================
 
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-
-    # welcome handler
-    app.add_handler(MessageHandler(filters.StatusUpdate.ALL, welcome_leave))
-
+    app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(CommandHandler("play", play))
-
-    app.add_handler(MessageHandler(filters.TEXT, message_handler))
+    app.add_handler(MessageHandler(filters.ALL, message_handler))
 
     print("Bot aktif 🚀")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
