@@ -155,6 +155,50 @@ async def unban_user(update, context, user_id):
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
     return "✅ Ban kaldırıldı"
 
+# ================= BUTTON HANDLER =================
+
+async def button_handler(update, context):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    action, user_id = data.split(":")
+    user_id = int(user_id)
+
+    if not await is_admin(update, query.from_user.id):
+        return await query.edit_message_text("❌ Bu işlem sana göre değil")
+
+    if action == "warn":
+        result = await warn_user(update, context, user_id)
+
+    elif action == "unwarn":
+        chat = update.effective_chat.id
+        warns[chat][user_id] = max(0, warns[chat][user_id] - 1)
+        result = "➖ Warn düşürüldü"
+
+    elif action == "mute":
+        result = await mute_user(update, context, user_id)
+
+    elif action == "unmute":
+        result = await unmute_user(update, context, user_id)
+
+    elif action == "ban":
+        result = await ban_user(update, context, user_id)
+
+    elif action == "unban":
+        result = await unban_user(update, context, user_id)
+
+    elif action == "panel":
+        return await query.edit_message_text(
+            "👮 Admin Panel",
+            reply_markup=admin_panel(user_id)
+        )
+
+    else:
+        result = "❌ Bilinmeyen işlem"
+
+    await query.edit_message_text(result)
+
 # ================= COMMANDS =================
 
 async def warn_cmd(update, context):
@@ -190,14 +234,10 @@ async def panel_cmd(update, context):
     user_id = await get_target(update, context)
     await update.message.reply_text("👮 Panel", reply_markup=admin_panel(user_id))
 
-# ================= API MUSIC =================
+# ================= MUSIC =================
 
 def search_music(query):
-    try:
-        url = f"https://api.vevioz.com/api/button/mp3/{query}"
-        return url
-    except:
-        return None
+    return f"https://api.vevioz.com/api/button/mp3/{query}"
 
 
 async def play(update, context):
@@ -209,13 +249,8 @@ async def play(update, context):
 
     try:
         link = search_music(query)
-
-        if not link:
-            return await msg.edit_text("❌ Şarkı bulunamadı")
-
         await update.message.reply_audio(audio=link)
         await msg.delete()
-
     except Exception as e:
         await msg.edit_text(f"❌ Hata: {str(e)}")
 
