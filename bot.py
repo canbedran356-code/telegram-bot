@@ -6,7 +6,12 @@ import yt_dlp
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from telegram import Update, ChatPermissions
+from telegram import (
+    Update,
+    ChatPermissions,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler,
     MessageHandler, ContextTypes, filters
@@ -17,6 +22,8 @@ from telegram.constants import ParseMode
 
 TOKEN = os.getenv("TOKEN")
 LOG_CHAT_ID = int(os.getenv("LOG_CHAT_ID", "0"))
+
+WELCOME_PHOTO = "https://hizliresim.com/d0rzkvv"
 
 MAX_WARN = 3
 MUTE_TIME = 120
@@ -67,33 +74,48 @@ async def log_action(context, update, action, reason=""):
     except:
         pass
 
+# ================= WELCOME / LEAVE =================
 
-# ================= USER BUL =================
+async def welcome_leave(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
 
-async def resolve_user(update, context):
-    if update.message.reply_to_message:
-        u = update.message.reply_to_message.from_user
-        return u.id, u.first_name
+    # Yeni gelenler
+    if message.new_chat_members:
+        for user in message.new_chat_members:
+            name = user.first_name
+            user_id = user.id
 
-    if context.args:
-        arg = context.args[0]
+            text = f"""
+🔥 Berxwedan Grubuna Hoşgeldin Heval {name}
 
-        if arg.isdigit():
-            try:
-                m = await update.effective_chat.get_member(int(arg))
-                return m.user.id, m.user.first_name
-            except:
-                return None, None
+📜 Kurallar:
+🚫 Link yasak
+🚫 Flood yasak
+⚠️ 3 warn = mute
 
-        if arg.startswith("@"):
-            username = arg.replace("@", "").lower()
-            admins = await update.effective_chat.get_administrators()
-            for m in admins:
-                if m.user.username and m.user.username.lower() == username:
-                    return m.user.id, m.user.first_name
+Keyifli sohbetler ✌️
+"""
 
-    return None, None
+            keyboard = [
+                [InlineKeyboardButton("📜 Kurallar", url="https://t.me/your_rules_link")],
+                [InlineKeyboardButton("👤 Profil", url=f"tg://user?id={user_id}")]
+            ]
 
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await message.reply_photo(
+                photo=WELCOME_PHOTO,
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML
+            )
+
+    # Çıkanlar
+    if message.left_chat_member:
+        user = message.left_chat_member
+        name = user.first_name
+
+        await message.reply_text(f"😢 Güle güle git Heval {name}")
 
 # ================= CORE =================
 
@@ -117,7 +139,6 @@ async def mute_user(update, context, user_id, reason):
 
 async def warn_user(update, context, user_id, reason):
     if await is_admin(update, user_id):
-        await update.message.reply_text("⚠️ Admin uyarı alamaz.")
         return
 
     chat = update.effective_chat.id
@@ -133,91 +154,12 @@ async def warn_user(update, context, user_id, reason):
     else:
         await update.message.reply_text(f"⚠️ Warn: {count}/{MAX_WARN}")
 
-
 # ================= COMMANDS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Guard + Müzik Bot aktif")
+    await update.message.reply_text("🤖 Bot aktif")
 
-
-# WARN
-async def warn_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    uid, _ = await resolve_user(update, context)
-    if uid:
-        await warn_user(update, context, uid, "admin")
-
-
-async def unwarn_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    uid, _ = await resolve_user(update, context)
-    if uid:
-        chat = update.effective_chat.id
-        if warns[chat][uid] > 0:
-            warns[chat][uid] -= 1
-        await update.message.reply_text("✅ Unwarn")
-
-
-# MUTE
-async def mute_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    uid, _ = await resolve_user(update, context)
-    if uid:
-        await mute_user(update, context, uid, "admin")
-
-
-async def unmute_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    uid, _ = await resolve_user(update, context)
-    if uid:
-        await context.bot.restrict_chat_member(
-            update.effective_chat.id,
-            uid,
-            ChatPermissions(can_send_messages=True)
-        )
-        await update.message.reply_text("🔊 Unmute")
-
-
-# BAN
-async def ban_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    uid, _ = await resolve_user(update, context)
-    if uid:
-        if await is_admin(update, uid):
-            await update.message.reply_text("⚠️ Admin banlanamaz.")
-            return
-
-        await context.bot.ban_chat_member(update.effective_chat.id, uid)
-        await update.message.reply_text("🚫 Ban")
-
-
-async def unban_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        await update.message.reply_text("❌ Bu işlem size göre değil.")
-        return
-
-    if context.args and context.args[0].isdigit():
-        uid = int(context.args[0])
-        await context.bot.unban_chat_member(update.effective_chat.id, uid)
-        await update.message.reply_text("✅ Unban")
-
-
-# ================= 🎵 MÜZİK =================
+# ================= MÜZİK =================
 
 async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -250,7 +192,6 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Müzik indirilemedi")
 
-
 # ================= AUTO =================
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -272,7 +213,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.delete()
         await warn_user(update, context, user.id, "link")
 
-
 # ================= MAIN =================
 
 def main():
@@ -280,14 +220,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
 
-    app.add_handler(CommandHandler("warn", warn_cmd))
-    app.add_handler(CommandHandler("unwarn", unwarn_cmd))
-
-    app.add_handler(CommandHandler("mute", mute_cmd))
-    app.add_handler(CommandHandler("unmute", unmute_cmd))
-
-    app.add_handler(CommandHandler("ban", ban_cmd))
-    app.add_handler(CommandHandler("unban", unban_cmd))
+    # welcome handler
+    app.add_handler(MessageHandler(filters.StatusUpdate.ALL, welcome_leave))
 
     app.add_handler(CommandHandler("play", play))
 
@@ -295,7 +229,6 @@ def main():
 
     print("Bot aktif 🚀")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
