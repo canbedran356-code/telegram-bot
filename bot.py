@@ -68,9 +68,10 @@ def action_buttons(user_id):
             InlineKeyboardButton("⛔ Ban", callback_data=f"ban:{user_id}")
         ],
         [
-            InlineKeyboardButton("👮 Admin Panel", callback_data=f"panel:{user_id}")
+            InlineKeyboardButton("👮 Panel", callback_data=f"panel:{user_id}")
         ]
     ])
+
 
 def admin_panel(user_id):
     return InlineKeyboardMarkup([
@@ -87,13 +88,13 @@ def admin_panel(user_id):
             InlineKeyboardButton("✅ Unban", callback_data=f"unban:{user_id}")
         ],
         [
-            InlineKeyboardButton("♻️ Reset Warn", callback_data=f"reset:{user_id}")
+            InlineKeyboardButton("♻️ Reset", callback_data=f"reset:{user_id}")
         ]
     ])
 
 # ================= CORE =================
 
-async def mute(update, context, user_id, reason=""):
+async def mute(update, context, user_id):
     if await is_admin(update, user_id):
         return
 
@@ -106,6 +107,7 @@ async def mute(update, context, user_id, reason=""):
         until_date=until
     )
 
+
 async def unmute(update, context, user_id):
     await context.bot.restrict_chat_member(
         update.effective_chat.id,
@@ -113,13 +115,16 @@ async def unmute(update, context, user_id):
         ChatPermissions(can_send_messages=True)
     )
 
+
 async def ban(update, context, user_id):
     if await is_admin(update, user_id):
         return
     await context.bot.ban_chat_member(update.effective_chat.id, user_id)
 
+
 async def unban(update, context, user_id):
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
+
 
 async def warn(update, context, user_id):
     chat = update.effective_chat.id
@@ -133,9 +138,11 @@ async def warn(update, context, user_id):
 
     return f"⚠️ Warn {count}/{MAX_WARN}"
 
+
 async def unwarn(update, context, user_id):
     chat = update.effective_chat.id
     warns[chat][user_id] = max(0, warns[chat][user_id] - 1)
+
 
 async def reset_warn(update, context, user_id):
     chat = update.effective_chat.id
@@ -147,8 +154,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    data = query.data
-    action, user_id = data.split(":")
+    action, user_id = query.data.split(":")
     user_id = int(user_id)
 
     member = await query.message.chat.get_member(query.from_user.id)
@@ -202,8 +208,15 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ydl_opts = {
         "format": "bestaudio/best",
-        "outtmpl": "%(title)s.%(ext)s",
         "quiet": True,
+        "noplaylist": True,
+        "sleep_interval": 2,
+        "max_sleep_interval": 5,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        }
     }
 
     try:
@@ -220,8 +233,8 @@ async def play(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(file)
         await msg.delete()
 
-    except:
-        await msg.edit_text("❌ Hata")
+    except Exception as e:
+        await msg.edit_text("❌ Müzik indirilemedi")
 
 # ================= AUTO =================
 
