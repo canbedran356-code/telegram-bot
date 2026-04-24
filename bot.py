@@ -1,61 +1,47 @@
 import logging
+import re
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# BotFather'dan alınan token
-TOKEN = 8416325072:AAGLEovwn8AbF9loNQiJ-LzLovzM1zY9-WM
+TOKEN = "TOKENİNİ BURAYA KOY"
 
-# Loglama ayarları
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
+logging.basicConfig(level=logging.INFO)
 
-# Yeni kullanıcıları karşılama ve güvenlik mesajı
+# Hoş geldin
 async def welcome_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for member in update.message.new_chat_members:
-        await context.bot.send_message(
-            chat_id=update.message.chat_id,
-            text=f"Hoş geldin {member.first_name}! 👋\nLütfen kuralları oku."
+        await update.message.reply_text(
+            f"Hoş geldin {member.first_name}! 👋"
         )
 
-# Link içeren mesajları silme (Güvenlik)
-async def check_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if message.entities:
-        for entity in message.entities:
-            if entity.type in ["url", "mention"]:
-                await message.delete()
-                await context.bot.send_message(
-                    chat_id=message.chat_id,
-                    text=f"⚠️ {message.from_user.first_name}, link veya mention paylaşmak yasak!"
-                )
+# Link kontrol
+def has_link(text):
+    return bool(re.search(r"(https?://|t\.me|www\.)", text.lower()))
 
-# Ban komutu (Sadece adminler için basit kontrol)
+async def check_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    if has_link(text):
+        await update.message.delete()
+        await update.message.reply_text("⚠️ Link yasak!")
+
+# Gerçek ban
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Kullanım: /ban @kullaniciadi")
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Birine cevap vererek kullan.")
         return
 
-    user_to_ban = context.args[0]
-    # Basit ban mantığı (Gerçek kullanımda user_id gereklidir)
-    await update.message.reply_text(f"{user_to_ban} gruptan uzaklaştırıldı. 🚫")
+    user_id = update.message.reply_to_message.from_user.id
+
+    await context.bot.ban_chat_member(update.effective_chat.id, user_id)
+    await update.message.reply_text("🚫 Banlandı")
 
 if __name__ == '__main__':
-    application = ApplicationBuilder().token(TOKEN).build()
-    
-    # Yeni gelenleri karşıla
-    new_member_handler = MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member)
-    
-    # Mesajları kontrol et (link vs)
-    message_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), check_messages)
-    
-    # Komutlar
-    ban_handler = CommandHandler('ban', ban_user)
-    
-    application.add_handler(new_member_handler)
-    application.add_handler(message_handler)
-    application.add_handler(ban_handler)
-    
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_member))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, check_messages))
+    app.add_handler(CommandHandler("ban", ban_user))
+
     print("Bot çalışıyor...")
-    application.run_polling()
+    app.run_polling()
