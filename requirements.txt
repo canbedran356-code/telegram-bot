@@ -1,3 +1,7 @@
+pyrogram==2.0.106
+tgcrypto
+pytgcalls==3.0.0
+yt-dlp
 python-telegram-bot==20.7
 requests
 httpx
