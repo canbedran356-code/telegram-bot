@@ -2,7 +2,7 @@ import os
 import re
 import time
 import logging
-import yt_dlp
+import requests
 
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -39,13 +39,11 @@ async def is_admin(update, user_id):
 
 
 async def get_target(update, context):
-    message = update.message
+    msg = update.message
 
-    # Reply varsa
-    if message.reply_to_message:
-        return message.reply_to_message.from_user.id
+    if msg.reply_to_message:
+        return msg.reply_to_message.from_user.id
 
-    # Arg varsa
     if context.args:
         arg = context.args[0]
 
@@ -58,31 +56,22 @@ async def get_target(update, context):
                 return member.user.id
             except:
                 return None
-
     return None
 
 
 def has_link(message):
-    if message.entities:
-        for e in message.entities:
-            if e.type in ["url", "text_link"]:
-                return True
-
-    if message.text:
-        if re.search(r"(https?://|t\.me|www\.)", message.text.lower()):
-            return True
-
+    if message.text and re.search(r"(https?://|t\.me|www\.)", message.text.lower()):
+        return True
     return False
 
 
 def is_flood(chat_id, user_id):
     now = time.time()
-    flood[chat_id][user_id] = [
-        t for t in flood[chat_id][user_id] if now - t < FLOOD_TIME
-    ]
+    flood[chat_id][user_id] = [t for t in flood[chat_id][user_id] if now - t < FLOOD_TIME]
     flood[chat_id][user_id].append(now)
     return len(flood[chat_id][user_id]) > FLOOD_LIMIT
 
+# ================= BUTTON =================
 
 def action_buttons(user_id):
     return InlineKeyboardMarkup([
@@ -110,9 +99,6 @@ def admin_panel(user_id):
         [
             InlineKeyboardButton("⛔ Ban", callback_data=f"ban:{user_id}"),
             InlineKeyboardButton("✅ Unban", callback_data=f"unban:{user_id}")
-        ],
-        [
-            InlineKeyboardButton("♻️ Reset", callback_data=f"reset:{user_id}")
         ]
     ])
 
@@ -124,14 +110,13 @@ async def warn_user(update, context, user_id):
 
     chat = update.effective_chat.id
     warns[chat][user_id] += 1
-    count = warns[chat][user_id]
 
-    if count >= MAX_WARN:
+    if warns[chat][user_id] >= MAX_WARN:
         warns[chat][user_id] = 0
         await mute_user(update, context, user_id)
         return "🔇 3 warn → mute"
 
-    return f"⚠️ Warn {count}/{MAX_WARN}"
+    return f"⚠️ Warn {warns[chat][user_id]}/{MAX_WARN}"
 
 
 async def mute_user(update, context, user_id):
@@ -170,18 +155,6 @@ async def unban_user(update, context, user_id):
     await context.bot.unban_chat_member(update.effective_chat.id, user_id)
     return "✅ Ban kaldırıldı"
 
-
-async def unwarn(update, context, user_id):
-    chat = update.effective_chat.id
-    warns[chat][user_id] = max(0, warns[chat][user_id] - 1)
-    return "➖ Warn azaltıldı"
-
-
-async def reset_warn(update, context, user_id):
-    chat = update.effective_chat.id
-    warns[chat][user_id] = 0
-    return "♻️ Warn sıfırlandı"
-
 # ================= COMMANDS =================
 
 async def warn_cmd(update, context):
@@ -189,8 +162,7 @@ async def warn_cmd(update, context):
     if not user_id:
         return await update.message.reply_text("❌ Kullanıcı bulunamadı")
 
-    msg = await warn_user(update, context, user_id)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(await warn_user(update, context, user_id))
 
 
 async def mute_cmd(update, context):
@@ -198,17 +170,7 @@ async def mute_cmd(update, context):
     if not user_id:
         return await update.message.reply_text("❌ Kullanıcı bulunamadı")
 
-    msg = await mute_user(update, context, user_id)
-    await update.message.reply_text(msg)
-
-
-async def unmute_cmd(update, context):
-    user_id = await get_target(update, context)
-    if not user_id:
-        return await update.message.reply_text("❌ Kullanıcı bulunamadı")
-
-    msg = await unmute_user(update, context, user_id)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(await mute_user(update, context, user_id))
 
 
 async def ban_cmd(update, context):
@@ -216,66 +178,46 @@ async def ban_cmd(update, context):
     if not user_id:
         return await update.message.reply_text("❌ Kullanıcı bulunamadı")
 
-    msg = await ban_user(update, context, user_id)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(await ban_user(update, context, user_id))
 
 
 async def unban_cmd(update, context):
     user_id = await get_target(update, context)
-    if not user_id:
-        return await update.message.reply_text("❌ Kullanıcı bulunamadı")
-
-    msg = await unban_user(update, context, user_id)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(await unban_user(update, context, user_id))
 
 
 async def panel_cmd(update, context):
-    if not await is_admin(update, update.effective_user.id):
-        return await update.message.reply_text("❌ Yetkin yok")
-
     user_id = await get_target(update, context)
-    if not user_id:
-        return await update.message.reply_text("❌ Kullanıcı bulunamadı")
+    await update.message.reply_text("👮 Panel", reply_markup=admin_panel(user_id))
 
-    await update.message.reply_text(
-        "👮 Admin Panel",
-        reply_markup=admin_panel(user_id)
-    )
+# ================= API MUSIC =================
 
-# ================= BUTTON =================
+def search_music(query):
+    try:
+        url = f"https://api.vevioz.com/api/button/mp3/{query}"
+        return url
+    except:
+        return None
 
-async def button_handler(update, context):
-    query = update.callback_query
-    await query.answer()
 
-    action, user_id = query.data.split(":")
-    user_id = int(user_id)
+async def play(update, context):
+    if not context.args:
+        return await update.message.reply_text("🎧 /play şarkı adı")
 
-    member = await query.message.chat.get_member(query.from_user.id)
-    if member.status not in ("administrator", "creator"):
-        return await query.answer("❌ Bu işlem sana göre değil", show_alert=True)
+    query = " ".join(context.args)
+    msg = await update.message.reply_text("🎧 aranıyor...")
 
-    fake_update = Update(update.update_id, message=query.message)
+    try:
+        link = search_music(query)
 
-    if action == "panel":
-        return await query.edit_message_text("👮 Panel", reply_markup=admin_panel(user_id))
+        if not link:
+            return await msg.edit_text("❌ Şarkı bulunamadı")
 
-    if action == "warn":
-        msg = await warn_user(fake_update, context, user_id)
-    elif action == "mute":
-        msg = await mute_user(fake_update, context, user_id)
-    elif action == "unmute":
-        msg = await unmute_user(fake_update, context, user_id)
-    elif action == "ban":
-        msg = await ban_user(fake_update, context, user_id)
-    elif action == "unban":
-        msg = await unban_user(fake_update, context, user_id)
-    elif action == "unwarn":
-        msg = await unwarn(fake_update, context, user_id)
-    elif action == "reset":
-        msg = await reset_warn(fake_update, context, user_id)
+        await update.message.reply_audio(audio=link)
+        await msg.delete()
 
-    await query.edit_message_text(msg)
+    except Exception as e:
+        await msg.edit_text(f"❌ Hata: {str(e)}")
 
 # ================= AUTO =================
 
@@ -300,31 +242,9 @@ async def message_handler(update, context):
             pass
 
         await update.message.reply_text(
-            f"🚫 {user.first_name} kural ihlali!",
+            "🚫 Kural ihlali",
             reply_markup=action_buttons(user.id)
         )
-
-# ================= MUSIC =================
-
-async def play(update, context):
-    if not context.args:
-        return await update.message.reply_text("🎧 /play şarkı")
-
-    query = " ".join(context.args)
-    msg = await update.message.reply_text("🎧 indiriliyor...")
-
-    try:
-        with yt_dlp.YoutubeDL({"format": "bestaudio", "quiet": True}) as ydl:
-            info = ydl.extract_info(f"ytsearch:{query}", download=True)
-            video = info["entries"][0]
-            file = ydl.prepare_filename(video)
-
-        await update.message.reply_audio(audio=open(file, "rb"))
-        os.remove(file)
-        await msg.delete()
-
-    except:
-        await msg.edit_text("❌ indirilemedi")
 
 # ================= MAIN =================
 
@@ -333,7 +253,6 @@ def main():
 
     app.add_handler(CommandHandler("warn", warn_cmd))
     app.add_handler(CommandHandler("mute", mute_cmd))
-    app.add_handler(CommandHandler("unmute", unmute_cmd))
     app.add_handler(CommandHandler("ban", ban_cmd))
     app.add_handler(CommandHandler("unban", unban_cmd))
     app.add_handler(CommandHandler("panel", panel_cmd))
@@ -343,7 +262,7 @@ def main():
     app.add_handler(MessageHandler(filters.ALL, message_handler))
 
     print("Bot aktif 🚀")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
